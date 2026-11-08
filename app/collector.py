@@ -285,6 +285,9 @@ def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     if "--once" in sys.argv:
         stats = run_once()
         sys.exit(1 if stats["ok"] == 0 and stats["failed"] > 0 else 0)
