@@ -35,7 +35,7 @@ def test_rain_blank_is_unknown():
 
 
 def test_rain_stale():
-    s = rain_1h(series([D(0)] * 7), T + timedelta(minutes=41))
+    s = rain_1h(series([D(0)] * 7), T + timedelta(minutes=31))
     assert s.value is None and s.reason == "강수 자료 지연"
 
 
@@ -49,8 +49,8 @@ def test_rise_missing_past():
     assert s.value is None
 
 
-def test_normal():
-    assert decide(Signal(D(0), T), Signal(D(0), T), TH).level == "normal"
+def test_safe():
+    assert decide(Signal(D(0), T), Signal(D(0), T), TH).level == "safe"
 
 
 def test_highest_wins():

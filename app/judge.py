@@ -5,7 +5,7 @@
   ② 하류 직전 30분 수위 상승폭 (role = 'downstream_water')
 를 계산하고, valley_thresholds 기준으로 단계를 정해 valley_status에 기록한다.
 
-단계: normal < caution < danger < evacuate, 그리고 unknown(자료 지연·판정 불가)
+단계: safe < caution < danger < evacuate, 그리고 unknown(자료 지연·판정 불가)
 - 결측·지연이면 마지막 값을 끌어다 쓰지 않는다.
 - 한쪽 신호만 있어도 그 신호가 경보 단계면 경보를 낸다.
   경보가 아니면서 한쪽이라도 자료가 없으면 unknown.
@@ -35,10 +35,10 @@ INTERVAL_SECONDS = 5 * 60
 STEP = timedelta(minutes=10)            # HRFCO 10분 자료
 RAIN_STEPS = 6                          # 1시간 = 10분 × 6
 RISE_WINDOW = timedelta(minutes=30)
-STALE_AFTER = timedelta(minutes=40)     # 최신 관측이 이보다 오래되면 '지연'
+STALE_AFTER = timedelta(minutes=30)     # 명세: 관측 30분 초과면 판정 불가
 LOOKBACK = timedelta(hours=3)           # DB에서 읽어올 범위
 
-NORMAL = "normal"
+NORMAL = "safe"                         # 명세 v0.2 상태 이름
 UNKNOWN = "unknown"
 LEVEL_RANK = {NORMAL: 0, "caution": 1, "danger": 2, "evacuate": 3}
 
