@@ -7,7 +7,9 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from app.judge import (Signal, Threshold, decide, rain_1h, water_rise_30m)  # noqa: E402
+from app.judge import (Signal, Threshold, decide, merge, rain_1h, rain_1h_direct,  # noqa: E402
+                       water_rise_30m)
+from app.kma_aws import parse as parse_aws  # noqa: E402
 
 KST = ZoneInfo("Asia/Seoul")
 T = datetime(2026, 11, 9, 14, 50, tzinfo=KST)
@@ -67,6 +69,38 @@ def test_unknown_when_missing_and_calm():
 def test_alert_even_if_other_missing():
     v = decide(Signal(None, None, "강수 결측"), Signal(D("0.22"), T), TH)
     assert v.level == "danger"
+
+
+def test_rain_1h_direct_uses_latest():
+    s = rain_1h_direct(series([D("12.5"), D(3), D(1)]), NOW)
+    assert s.value == D("12.5")
+
+
+def test_rain_1h_direct_missing():
+    s = rain_1h_direct(series([None, D(3)]), NOW)
+    assert s.value is None and s.reason == "강수 결측"
+
+
+def test_merge_skips_dead_station():
+    dead = Signal(None, T, "강수 결측")      # 신촌리처럼 죽은 관측소
+    alive = Signal(D("0.0"), T)
+    assert merge([dead, alive]).value == D("0.0")
+
+
+AWS_SAMPLE = """#START7777
+# YYMMDDHHMI   STN    WD1    WS1    WDS    WSS   WD10   WS10     TA     RE RN-15m RN-60m RN-12H RN-DAY     HM     PA     PS     TD
+#        KST    ID    deg    m/s    deg    m/s    deg    m/s      C      1     mm     mm     mm     mm      %    hPa    hPa     C
+202611091559   582  156.4    3.0  154.9    3.9  159.0    3.1   10.4  -99.9    0.0    0.0    0.0    0.5   66.3  986.1 1025.5    4.4
+202611091600   582  156.4    3.0  154.9    3.9  159.0    3.1   10.4  -99.9    0.5    2.5    0.0    0.5   66.3  986.1 1025.5    4.4
+202611091610   582  156.4    3.0  154.9    3.9  159.0    3.1   10.4  -99.9    0.0  -99.9    0.0    0.5   66.3  986.1 1025.5    4.4
+#7777END"""
+
+
+def test_parse_aws_rn60_every_10min():
+    rows = parse_aws(AWS_SAMPLE)
+    assert [t.minute for t, _ in rows] == [0, 10]    # 15:59는 10분 정각이 아니라 빠짐
+    assert rows[0][1] == D("2.5")                    # RN-60m 열
+    assert rows[1][1] is None                        # -99.9 → 결측
 
 
 if __name__ == "__main__":

@@ -45,6 +45,9 @@ LEVEL_RANK = {NORMAL: 0, "caution": 1, "danger": 2, "evacuate": 3}
 ROLE_RAIN = "upstream_rain"
 ROLE_WATER = "downstream_water"
 
+KIND_RAIN_10M = "rainfall"        # 10분 강수량 (HRFCO) → 6개 합산
+KIND_RAIN_1H = "rainfall_1h"      # 이미 1시간 누적 (기상청 AWS RN-60m) → 최신 값 그대로
+
 Series = dict[datetime, "Decimal | None"]
 
 
@@ -89,6 +92,19 @@ def rain_1h(series: Series, now: datetime) -> Signal:
     if any(v is None for v in values):
         return Signal(None, latest, "강수 결측")
     return Signal(sum(values, Decimal(0)), latest)
+
+
+def rain_1h_direct(series: Series, now: datetime) -> Signal:
+    """값 자체가 1시간 누적 강수인 관측소. 최신 값이 비면 판정 불가."""
+    if not series:
+        return Signal(None, None, "강수 자료 없음")
+    latest = max(series)
+    if now - latest > STALE_AFTER:
+        return Signal(None, latest, "강수 자료 지연")
+    value = series[latest]
+    if value is None:
+        return Signal(None, latest, "강수 결측")
+    return Signal(value, latest)
 
 
 def water_rise_30m(series: Series, now: datetime) -> Signal:
@@ -183,16 +199,19 @@ def evaluate_valley(conn, valley_id: int, now: datetime) -> Verdict:
             log.warning("valley %s: 알 수 없는 단계 이름 %s 무시", valley_id, unknown_levels)
 
         cur.execute(
-            "SELECT role, station_id FROM valley_stations WHERE valley_id = %s",
+            "SELECT vs.role, vs.station_id, s.kind FROM valley_stations vs "
+            "JOIN stations s ON s.id = vs.station_id WHERE vs.valley_id = %s",
             (valley_id,),
         )
         links = cur.fetchall()
 
         since = now - LOOKBACK
-        rain = merge([rain_1h(_series(cur, sid, since), now)
-                      for role, sid in links if role == ROLE_RAIN])
+        rain_calc = {KIND_RAIN_10M: rain_1h, KIND_RAIN_1H: rain_1h_direct}
+        rain = merge([rain_calc[kind](_series(cur, sid, since), now)
+                      for role, sid, kind in links
+                      if role == ROLE_RAIN and kind in rain_calc])
         rise = merge([water_rise_30m(_series(cur, sid, since), now)
-                      for role, sid in links if role == ROLE_WATER])
+                      for role, sid, kind in links if role == ROLE_WATER])
     return decide(rain, rise, thresholds)
 
 

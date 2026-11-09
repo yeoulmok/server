@@ -25,6 +25,8 @@ from zoneinfo import ZoneInfo
 import httpx
 import psycopg
 
+from app.kma_aws import fetch_kma_aws
+
 log = logging.getLogger("collector")
 
 KST = ZoneInfo("Asia/Seoul")
@@ -193,6 +195,7 @@ FETCHERS: dict[tuple[str, str], Callable[[httpx.Client, Station, datetime], list
     ("hrfco", "waterlevel"): fetch_hrfco,
     ("hrfco", "rainfall"): fetch_hrfco,
     ("kma", "rainfall"): fetch_kma,
+    ("kma", "rainfall_1h"): fetch_kma_aws,
 }
 
 
