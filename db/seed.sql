@@ -5,11 +5,11 @@ INSERT INTO stations (source, code, name, kind, lat, lon) VALUES
   ('hrfco', '10064075', '원주시(신촌리)', 'rainfall',   37.296944, 127.971389),
   ('hrfco', '1006664',  '원주시(동부교)', 'waterlevel', NULL, NULL);
 
+-- 11/12: 신촌리 우량계는 자료를 보내지 않아 계곡 연결에서 뺌 (수집은 계속). 상류 강수는 아래 신림 AWS
 INSERT INTO valley_stations (valley_id, station_id, role)
-SELECT v.id, s.id,
-       CASE s.kind WHEN 'rainfall' THEN 'upstream_rain' ELSE 'downstream_water' END
+SELECT v.id, s.id, 'downstream_water'
 FROM valleys v, stations s
-WHERE v.name = '금대리 계곡';
+WHERE v.name = '금대리 계곡' AND s.source = 'hrfco' AND s.kind = 'waterlevel';
 
 INSERT INTO valley_thresholds (valley_id, level, rain_1h_mm, water_rise_m)
 SELECT v.id, t.level, t.rain, t.rise
