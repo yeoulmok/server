@@ -1,0 +1,648 @@
+{
+  "info": {
+    "name": "여울목 API (명세 v0.2)",
+    "description": "여울목 서버 API 점검용. 명세 10개 중 구현된 8개(health, devices POST/PATCH, valleys, valleys/{id}, me/valleys, me/subscriptions PUT/DELETE).\n\n전체 실행: 컬렉션 오른쪽 ⋯ → Run collection → Run.\n2번 폴더는 순서대로 실행해야 함 (기기 등록 → device_id 저장 → 나머지가 그 값을 씀).\n실행하면 DB에 테스트 기기 1개가 남음 (apns_token 없음, 구독은 마지막에 해제).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://yeoulmok.ihaewon.com/api"
+    },
+    {
+      "key": "valley_id",
+      "value": "1"
+    },
+    {
+      "key": "device_id",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "1. 기본 조회",
+      "item": [
+        {
+          "name": "헬스체크 GET /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"status ok\", () => pm.expect(pm.response.json().status).to.eql(\"ok\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "계곡 목록 GET /valleys",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/valleys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "valleys"
+              ]
+            },
+            "description": "level·관측값·stale을 콘솔(View → Show Postman Console)에도 찍는다."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test(\"source·updated_at 있음\", () => { pm.expect(j.source).to.include(\"자료\"); pm.expect(j.updated_at).to.be.a(\"string\"); });",
+                  "pm.test(\"계곡 1곳 이상\", () => pm.expect(j.valleys.length).to.be.above(0));",
+                  "j.valleys.forEach(v => {",
+                  "  pm.test(`[${v.name}] level이 5종 중 하나`, () => pm.expect([\"safe\",\"caution\",\"danger\",\"evacuate\",\"unknown\"]).to.include(v.level));",
+                  "  pm.test(`[${v.name}] 값은 숫자 또는 null (0으로 채우지 않음)`, () => {",
+                  "    [\"rain_1h_mm\",\"water_rise_30m_m\"].forEach(k => pm.expect(v[k] === null || typeof v[k] === \"number\").to.be.true);",
+                  "  });",
+                  "  pm.test(`[${v.name}] stale은 true/false`, () => pm.expect(v.stale).to.be.a(\"boolean\"));",
+                  "});",
+                  "console.log(JSON.stringify(j.valleys.map(v => [v.name, v.level, v.rain_1h_mm, v.water_rise_30m_m, v.observed_at, v.stale])));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "검색 GET /valleys?q=금대",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/valleys?q=금대",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "valleys"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "금대"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"금대리가 검색됨\", () => pm.expect(pm.response.json().valleys.map(v => v.name).join()).to.include(\"금대\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "경보 상세 GET /valleys/{{valley_id}}",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/valleys/{{valley_id}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "valleys",
+                "{{valley_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test(\"level 5종\", () => pm.expect([\"safe\",\"caution\",\"danger\",\"evacuate\",\"unknown\"]).to.include(j.level));",
+                  "pm.test(\"관측 근거 있음\", () => pm.expect(j.observations.length).to.be.above(0));",
+                  "pm.test(\"면책 문구·출처·행동 요령\", () => { pm.expect(j.disclaimer).to.be.a(\"string\"); pm.expect(j.source).to.include(\"자료\"); pm.expect(j.actions.length).to.be.above(0); });",
+                  "j.observations.forEach(o => pm.test(`[${o.station}] value가 null이면 note에 이유`, () => { if (o.value === null) pm.expect(o.note).to.be.a(\"string\"); }));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "없는 계곡 GET /valleys/99999 → 404",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/valleys/99999",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "valleys",
+                "99999"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"에러 형식\", () => pm.expect(pm.response.json().error.code).to.eql(\"VALLEY_NOT_FOUND\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. 기기·구독 흐름 (순서대로 실행)",
+      "item": [
+        {
+          "name": "기기 등록 POST /devices",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/devices",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "devices"
+              ]
+            },
+            "description": "테스트용 기기 1개가 DB devices 표에 생긴다. apns_token을 비워서 실제 푸시는 안 간다. 받은 device_id는 자동으로 변수에 저장.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"apns_token\": null,\n  \"platform\": \"ios\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"201\", () => pm.response.to.have.status(201));",
+                  "const id = pm.response.json().device_id;",
+                  "pm.test(\"device_id 발급 (d_로 시작)\", () => pm.expect(id).to.match(/^d_/));",
+                  "pm.collectionVariables.set(\"device_id\", id);",
+                  "console.log(\"테스트 기기:\", id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "알림 끄기 PATCH /devices",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "X-Device-Id",
+                "value": "{{device_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/devices",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "devices"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notify_on\": false\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"notify_on false\", () => pm.expect(pm.response.json().notify_on).to.eql(false));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "알림 다시 켜기 PATCH /devices",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "X-Device-Id",
+                "value": "{{device_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/devices",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "devices"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notify_on\": true\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"notify_on true\", () => pm.expect(pm.response.json().notify_on).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "구독 PUT /me/subscriptions/{{valley_id}}",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-Device-Id",
+                "value": "{{device_id}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/me/subscriptions/{{valley_id}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "me",
+                "subscriptions",
+                "{{valley_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"subscribed true\", () => pm.expect(pm.response.json().subscribed).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "같은 계곡 또 구독 (중복 무시)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-Device-Id",
+                "value": "{{device_id}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/me/subscriptions/{{valley_id}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "me",
+                "subscriptions",
+                "{{valley_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 (에러 아님)\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "내 계곡 GET /me/valleys",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Device-Id",
+                "value": "{{device_id}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/me/valleys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "me",
+                "valleys"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const vs = pm.response.json().valleys;",
+                  "const vid = Number(pm.collectionVariables.get(\"valley_id\"));",
+                  "pm.test(\"구독한 계곡이 1번만 보임\", () => pm.expect(vs.filter(v => v.id === vid).length).to.eql(1));",
+                  "pm.test(\"subscribed true\", () => pm.expect(vs.every(v => v.subscribed)).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "상세에도 구독 표시 GET /valleys/{{valley_id}}",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Device-Id",
+                "value": "{{device_id}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/valleys/{{valley_id}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "valleys",
+                "{{valley_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"subscribed true\", () => pm.expect(pm.response.json().subscribed).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "구독 해제 DELETE /me/subscriptions/{{valley_id}}",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-Device-Id",
+                "value": "{{device_id}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/me/subscriptions/{{valley_id}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "me",
+                "subscriptions",
+                "{{valley_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"subscribed false\", () => pm.expect(pm.response.json().subscribed).to.eql(false));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "해제 후 내 계곡 비었는지",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Device-Id",
+                "value": "{{device_id}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/me/valleys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "me",
+                "valleys"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const vid = Number(pm.collectionVariables.get(\"valley_id\"));",
+                  "pm.test(\"해제한 계곡 없음\", () => pm.expect(pm.response.json().valleys.some(v => v.id === vid)).to.be.false);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. 에러 처리",
+      "item": [
+        {
+          "name": "헤더 없이 GET /me/valleys → 400",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/me/valleys",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "me",
+                "valleys"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"DEVICE_ID_REQUIRED\", () => pm.expect(pm.response.json().error.code).to.eql(\"DEVICE_ID_REQUIRED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "없는 기기로 구독 → 404",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-Device-Id",
+                "value": "d_doesnotexist000"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/me/subscriptions/{{valley_id}}",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "me",
+                "subscriptions",
+                "{{valley_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"DEVICE_NOT_FOUND\", () => pm.expect(pm.response.json().error.code).to.eql(\"DEVICE_NOT_FOUND\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "없는 계곡 구독 → 404",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-Device-Id",
+                "value": "{{device_id}}"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/me/subscriptions/99999",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "me",
+                "subscriptions",
+                "99999"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"VALLEY_NOT_FOUND\", () => pm.expect(pm.response.json().error.code).to.eql(\"VALLEY_NOT_FOUND\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
