@@ -41,19 +41,14 @@ def _sources(cur, valley_ids: list[int]) -> list[str]:
 
 def _not_found(valley_id: int) -> JSONResponse:
     return JSONResponse(status_code=404, content={
-        "error": {"code": "VALLEY_NOT_FOUND", "message": f"계곡 {valley_id}을(를) 찾을 수 없습니다."}})
+        "error": {"code": "VALLEY_NOT_FOUND", "message": "계곡 정보를 찾을 수 없어요"}})
 
 
-@router.get("/valleys")
-def list_valleys(q: str | None = None, x_device_id: str | None = Header(default=None)):
+def _valley_list(sql: str, params: tuple, x_device_id: str | None) -> dict:
+    """4번·6번 공용. sql은 valleys에서 (id, name, region, lat, lon)을 고르는 쿼리."""
     now = datetime.now(vv.KST)
     with connect() as conn, conn.cursor() as cur:
-        sql = "SELECT id, name, region, lat, lon FROM valleys WHERE is_active"
-        params: tuple = ()
-        if q:
-            sql += " AND (name ILIKE %s OR region ILIKE %s)"
-            params = (f"%{q}%", f"%{q}%")
-        cur.execute(sql + " ORDER BY id", params)
+        cur.execute(sql, params)
         valleys = cur.fetchall()
         ids = [v[0] for v in valleys]
         cur.execute(LATEST_STATUS, (ids,))
@@ -65,6 +60,16 @@ def list_valleys(q: str | None = None, x_device_id: str | None = Header(default=
         "source": vv.source_text(sources),
         "valleys": [vv.summary_row(v, status.get(v[0]), now, v[0] in subs) for v in valleys],
     }
+
+
+@router.get("/valleys")
+def list_valleys(q: str | None = None, x_device_id: str | None = Header(default=None)):
+    sql = "SELECT id, name, region, lat, lon FROM valleys WHERE is_active"
+    params: tuple = ()
+    if q:
+        sql += " AND (name ILIKE %s OR region ILIKE %s)"
+        params = (f"%{q}%", f"%{q}%")
+    return _valley_list(sql + " ORDER BY id", params, x_device_id)
 
 
 @router.get("/valleys/{valley_id}")

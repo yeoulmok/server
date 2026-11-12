@@ -117,6 +117,7 @@ def detail(valley: tuple, status: tuple | None, observations: list[dict], now: d
     level, stale = freshness(level, observed_at, now)
     summary, actions = TEXTS[level]
     return {
+        "updated_at": fmt_time(now),
         "id": vid,
         "name": name,
         "level": level,
