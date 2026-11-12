@@ -29,6 +29,8 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+from app import push
+
 log = logging.getLogger("judge")
 
 KST = ZoneInfo("Asia/Seoul")
@@ -270,6 +272,10 @@ def run_once() -> dict[str, int]:
             try:
                 v = evaluate_valley(conn, valley_id, now)
                 changed = save_status(conn, valley_id, v)
+                try:
+                    push.after_judge(conn, valley_id, name, now)
+                except Exception:
+                    log.exception("%s(id=%s): 푸시 처리 실패 (판정은 저장됨)", name, valley_id)
                 stats["ok"] += 1
                 stats["changed"] += int(changed)
                 log.info("%s: %s%s | 강수1h %s | 수위상승30m %s",
