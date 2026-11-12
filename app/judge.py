@@ -7,6 +7,8 @@
 
 단계: safe < caution < danger < evacuate, 그리고 unknown(자료 지연·판정 불가)
 - 결측·지연이면 마지막 값을 끌어다 쓰지 않는다.
+  단, 최신 시각이 아직 비어 있으면(HRFCO가 새 10분 행을 빈 값으로 먼저 주고 나중에 채움)
+  값이 있는 가장 최근 시각을 기준으로 삼는다. 그 시각도 30분을 넘기면 지연(판정 불가).
 - 한쪽 신호만 있어도 그 신호가 경보 단계면 경보를 낸다.
   경보가 아니면서 한쪽이라도 자료가 없으면 unknown.
 - valley_status는 단계가 바뀔 때 새 행을 넣고(changed_at = 그 단계 시작 시각),
@@ -81,11 +83,19 @@ class Verdict:
 # 순수 계산 (DB 없이 테스트 가능)
 # ---------------------------------------------------------------------------
 
+def _latest_valued(series: Series) -> datetime | None:
+    """값이 있는(None 아닌) 가장 최근 관측시각. 전부 비었으면 None."""
+    valued = [t for t, v in series.items() if v is not None]
+    return max(valued) if valued else None
+
+
 def rain_1h(series: Series, now: datetime) -> Signal:
-    """최신 시각 기준 직전 1시간(10분 자료 6개) 합계. 하나라도 비면 판정 불가."""
+    """값이 있는 최신 시각 기준 직전 1시간(10분 자료 6개) 합계. 하나라도 비면 판정 불가."""
     if not series:
         return Signal(None, None, "강수 자료 없음")
-    latest = max(series)
+    latest = _latest_valued(series)
+    if latest is None:
+        return Signal(None, max(series), "강수 결측")
     if now - latest > STALE_AFTER:
         return Signal(None, latest, "강수 자료 지연")
     values = [series.get(latest - STEP * i) for i in range(RAIN_STEPS)]
@@ -95,27 +105,28 @@ def rain_1h(series: Series, now: datetime) -> Signal:
 
 
 def rain_1h_direct(series: Series, now: datetime) -> Signal:
-    """값 자체가 1시간 누적 강수인 관측소. 최신 값이 비면 판정 불가."""
+    """값 자체가 1시간 누적 강수인 관측소. 값이 있는 최신 시각의 값을 그대로 쓴다."""
     if not series:
         return Signal(None, None, "강수 자료 없음")
-    latest = max(series)
+    latest = _latest_valued(series)
+    if latest is None:
+        return Signal(None, max(series), "강수 결측")
     if now - latest > STALE_AFTER:
         return Signal(None, latest, "강수 자료 지연")
-    value = series[latest]
-    if value is None:
-        return Signal(None, latest, "강수 결측")
-    return Signal(value, latest)
+    return Signal(series[latest], latest)
 
 
 def water_rise_30m(series: Series, now: datetime) -> Signal:
-    """최신 수위 - 30분 전 수위. 둘 중 하나라도 없으면 판정 불가."""
+    """값이 있는 최신 수위 - 그 30분 전 수위. 30분 전 값이 없으면 판정 불가."""
     if not series:
         return Signal(None, None, "수위 자료 없음")
-    latest = max(series)
+    latest = _latest_valued(series)
+    if latest is None:
+        return Signal(None, max(series), "수위 결측")
     if now - latest > STALE_AFTER:
         return Signal(None, latest, "수위 자료 지연")
-    current, before = series.get(latest), series.get(latest - RISE_WINDOW)
-    if current is None or before is None:
+    current, before = series[latest], series.get(latest - RISE_WINDOW)
+    if before is None:
         return Signal(None, latest, "수위 결측")
     return Signal(current - before, latest)
 

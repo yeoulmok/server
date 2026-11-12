@@ -225,7 +225,7 @@ UPSERT_SQL = """
 INSERT INTO observations (station_id, observed_at, value, collected_at)
 VALUES (%s, %s, %s, now())
 ON CONFLICT (station_id, observed_at)
-DO UPDATE SET value = EXCLUDED.value, collected_at = EXCLUDED.collected_at
+DO UPDATE SET value = COALESCE(EXCLUDED.value, observations.value), collected_at = EXCLUDED.collected_at
 """
 
 

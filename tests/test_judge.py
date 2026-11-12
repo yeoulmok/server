@@ -77,8 +77,30 @@ def test_rain_1h_direct_uses_latest():
 
 
 def test_rain_1h_direct_missing():
-    s = rain_1h_direct(series([None, D(3)]), NOW)
+    s = rain_1h_direct(series([None, None]), NOW)
     assert s.value is None and s.reason == "강수 결측"
+
+
+def test_rain_1h_direct_latest_blank_uses_previous():
+    s = rain_1h_direct(series([None, D(3)]), NOW)    # 최신만 아직 비어 있음
+    assert s.value == D(3) and s.observed_at == T - timedelta(minutes=10)
+
+
+def test_rise_latest_blank_uses_previous():
+    s = water_rise_30m(series([None, D("0.30"), D("0.20"), D("0.15"), D("0.10")]), NOW)
+    assert s.value == D("0.20")                       # 10분 전 0.30 - 40분 전 0.10
+    assert decide(Signal(D(0), T), s, TH).level == "danger"
+
+
+def test_rain_latest_blank_uses_previous():
+    s = rain_1h(series([None] + [D(1)] * 6), NOW)
+    assert s.value == D(6)
+
+
+def test_all_blank_over_30min_is_unknown():
+    s = water_rise_30m(series([None, None, None, None, D("0.30"), D("0.30"), D("0.30"), D("0.30")]), NOW)
+    assert s.value is None and s.reason == "수위 자료 지연"   # 값 있는 최신이 40분 전
+    assert decide(Signal(D(0), T), s, TH).level == "unknown"
 
 
 def test_merge_skips_dead_station():
