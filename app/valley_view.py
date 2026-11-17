@@ -12,6 +12,8 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+from app.estimate import AI_CAUTION_M
+
 KST = ZoneInfo("Asia/Seoul")
 
 STALE_FLAG = timedelta(minutes=15)
@@ -71,12 +73,15 @@ def pick_threshold(value, limits: dict[str, Decimal | None]) -> float | None:
     return num(best)
 
 
-def summary_row(valley: tuple, status: tuple | None, now: datetime, subscribed: bool) -> dict:
+def summary_row(valley: tuple, status: tuple | None, now: datetime, subscribed: bool,
+                estimated: bool = False) -> dict:
     """GET /valleys 의 계곡 한 줄. valley = (id, name, region, lat, lon),
-    status = (level, rain_1h_mm, water_rise_m, observed_at) 또는 None."""
+    status = (level, rain_1h_mm, water_rise_m, observed_at) 또는 None.
+    estimated = 단계가 AI 추정(강수 기반)으로 정해졌는지 (명세 v0.3 외 추가 필드)."""
     vid, name, region, lat, lon = valley
     level, rain, rise, observed_at = status if status else (None, None, None, None)
     level, stale = freshness(level, observed_at, now)
+    estimated = bool(estimated) and level != "unknown"
     return {
         "id": vid,
         "name": name,
@@ -89,6 +94,7 @@ def summary_row(valley: tuple, status: tuple | None, now: datetime, subscribed: 
         "observed_at": fmt_time(observed_at),
         "stale": stale,
         "subscribed": subscribed,
+        "estimated": estimated,
     }
 
 
@@ -108,13 +114,30 @@ def observation(kind: str, station: str, signal, thresholds: list[tuple]) -> dic
     }
 
 
+def est_observation(est_rise, observed_at: datetime | None, threshold=AI_CAUTION_M) -> dict:
+    """AI 추정 한 줄 (하류 수위가 없거나 비었을 때). 명세 v0.3 외 추가."""
+    return {
+        "type": "est_rise_3h",
+        "station": "AI 추정(강수 기반)",
+        "observed_at": fmt_time(observed_at),
+        "value": num(est_rise),
+        "unit": "m",
+        "threshold": num(threshold),
+        "note": None,
+        "estimated": True,
+    }
+
+
 def detail(valley: tuple, status: tuple | None, observations: list[dict], now: datetime,
            subscribed: bool, sources) -> dict:
-    """GET /valleys/{id}. status = (level, rain, rise, observed_at, ai_explanation, ai_fallback) 또는 None."""
+    """GET /valleys/{id}. status = (level, rain, rise, observed_at, ai_explanation, ai_fallback
+    [, estimated]) 또는 None."""
     vid, name = valley[0], valley[1]
     level, observed_at = (status[0], status[3]) if status else (None, None)
     ai_explanation = status[4] if status else None
+    estimated = bool(status[6]) if status and len(status) > 6 else False
     level, stale = freshness(level, observed_at, now)
+    estimated = estimated and level != "unknown"
     summary, actions = TEXTS[level]
     return {
         "updated_at": fmt_time(now),
@@ -130,4 +153,5 @@ def detail(valley: tuple, status: tuple | None, observations: list[dict], now: d
         "source": source_text(sources),
         "subscribed": subscribed,
         "stale": stale,
+        "estimated": estimated,
     }

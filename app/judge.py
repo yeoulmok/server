@@ -11,6 +11,13 @@
   값이 있는 가장 최근 시각을 기준으로 삼는다. 그 시각도 30분을 넘기면 지연(판정 불가).
 - 한쪽 신호만 있어도 그 신호가 경보 단계면 경보를 낸다.
   경보가 아니면서 한쪽이라도 자료가 없으면 unknown.
+- AI 확인 단계 (app/estimate.py, 4차 실험 2단 알람):
+  하류 수위 연결이 없는 계곡, 또는 수위 자료가 비었을 때만
+    주의 = 24시간 강수 ≥ X mm 그리고 AI 추정 상승폭 ≥ 0.07m
+  위험·대피는 지금 규칙 그대로. AI는 단계를 올리기만 한다 (unknown을 safe로 바꾸지 않음).
+  수위 연결이 없는 계곡은 '수위 없음'을 결측으로 치지 않는다.
+  모델 파일이 없으면 AI를 건너뜀: 수위 있는 계곡은 지금과 같고,
+  수위 없는 계곡은 24시간 규칙만으로 주의를 낸다(놓치지 않게).
 - valley_status는 단계가 바뀔 때 새 행을 넣고(changed_at = 그 단계 시작 시각),
   같은 단계가 이어지면 최신 행의 수치와 observed_at만 갱신한다.
 
@@ -29,7 +36,9 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
+from app import estimate as est_mod
 from app import push
+from app.estimate import Estimate
 
 log = logging.getLogger("judge")
 
@@ -41,6 +50,7 @@ RAIN_STEPS = 6                          # 1시간 = 10분 × 6
 RISE_WINDOW = timedelta(minutes=30)
 STALE_AFTER = timedelta(minutes=30)     # 명세: 관측 30분 초과면 판정 불가
 LOOKBACK = timedelta(hours=3)           # DB에서 읽어올 범위
+RAIN_LOOKBACK = timedelta(hours=73)     # AI 특징(72시간 강수)용 강수 범위
 
 NORMAL = "safe"                         # 명세 v0.2 상태 이름
 UNKNOWN = "unknown"
@@ -74,6 +84,8 @@ class Verdict:
     level: str
     rain: Signal
     rise: Signal
+    est: Estimate | None = None     # AI 확인 단계를 봤을 때만 (수위 없음·수위 결측)
+    estimated: bool = False         # 최종 단계가 AI 추정 때문에 정해졌으면 True
 
     @property
     def observed_at(self) -> datetime | None:
@@ -155,23 +167,47 @@ def level_for(value: Decimal, thresholds: list[Threshold], attr: str) -> str:
     return best
 
 
-def decide(rain: Signal, rise: Signal, thresholds: list[Threshold]) -> Verdict:
+def _rank_max(levels: list[str]) -> str:
+    return max(levels, key=LEVEL_RANK.__getitem__, default=NORMAL)
+
+
+def decide(rain: Signal, rise: Signal, thresholds: list[Threshold],
+           est: Estimate | None = None, has_water: bool = True) -> Verdict:
+    """est: AI 추정 (없으면 None). has_water: 하류 수위관측소가 연결된 계곡인지."""
     levels: list[str] = []
     missing = False
-    for sig, attr in ((rain, "rain_1h_mm"), (rise, "water_rise_m")):
+    signals = [(rain, "rain_1h_mm")] + ([(rise, "water_rise_m")] if has_water else [])
+    for sig, attr in signals:
         if sig.value is None:
             missing = True
         else:
             levels.append(level_for(sig.value, thresholds, attr))
+    observed_top = _rank_max(levels)
 
-    top = max(levels, key=LEVEL_RANK.__getitem__, default=NORMAL)
+    # AI 확인 단계는 수위가 없을 때만 (수위 있는 계곡에서 수위가 들어오면 지금 판정 그대로)
+    use_ai = not has_water or rise.value is None
+    if not use_ai:
+        est = None
+    ai_caution = False
+    if est is not None:
+        if est.rise is not None:
+            ai_caution = est.ai_hit
+        elif not has_water:
+            ai_caution = est.rule_hit      # 모델이 없으면 규칙24h만으로 (놓치지 않게)
+        if not has_water and est.rain_24h is None:
+            missing = True                 # 24시간 강수를 못 만들면 수위 없는 계곡은 판정 불가
+    elif not has_water:
+        missing = True
+
+    top = _rank_max(levels + (["caution"] if ai_caution else []))
+    estimated = ai_caution and LEVEL_RANK[observed_top] < LEVEL_RANK["caution"]
     if top != NORMAL:
         level = top            # 한쪽만 있어도 경보는 낸다
     elif missing:
         level = UNKNOWN        # 경보는 아닌데 자료가 비었으면 '판정 불가'
     else:
         level = NORMAL
-    return Verdict(level, rain, rise)
+    return Verdict(level, rain, rise, est, estimated)
 
 
 # ---------------------------------------------------------------------------
@@ -219,18 +255,28 @@ def evaluate_valley(conn, valley_id: int, now: datetime) -> Verdict:
         links = cur.fetchall()
 
         since = now - LOOKBACK
+        rain_since = now - RAIN_LOOKBACK
         rain_calc = {KIND_RAIN_10M: rain_1h, KIND_RAIN_1H: rain_1h_direct}
-        rain = merge([rain_calc[kind](_series(cur, sid, since), now)
-                      for role, sid, kind in links
-                      if role == ROLE_RAIN and kind in rain_calc])
-        rise = merge([water_rise_30m(_series(cur, sid, since), now)
-                      for role, sid, kind in links if role == ROLE_WATER])
-    return decide(rain, rise, thresholds)
+        per_hour = {KIND_RAIN_10M: est_mod.hourly_from_10min, KIND_RAIN_1H: est_mod.hourly_from_1h}
+        rain_series = [(kind, _series(cur, sid, rain_since)) for role, sid, kind in links
+                       if role == ROLE_RAIN and kind in rain_calc]
+        rain = merge([rain_calc[kind](s, now) for kind, s in rain_series])
+        water_sids = [sid for role, sid, kind in links if role == ROLE_WATER]
+        rise = merge([water_rise_30m(_series(cur, sid, since), now) for sid in water_sids])
+
+    has_water = bool(water_sids)
+    est = None
+    if not has_water or rise.value is None:
+        model = est_mod.load_model()
+        est = est_mod.merge([est_mod.estimate(s, now, per_hour[kind], model) for kind, s in rain_series])
+    return decide(rain, rise, thresholds, est, has_water)
 
 
 def save_status(conn, valley_id: int, v: Verdict) -> bool:
     """단계가 바뀌면 새 행(True), 같으면 최신 행 갱신(False)."""
-    params = (v.rain.value, v.rise.value, v.observed_at)
+    est = v.est
+    params = (v.rain.value, v.rise.value, v.observed_at,
+              est.rise if est else None, est.rain_24h if est else None, v.estimated)
     with conn.transaction(), conn.cursor() as cur:
         cur.execute(
             "SELECT id, level FROM valley_status WHERE valley_id = %s "
@@ -240,14 +286,14 @@ def save_status(conn, valley_id: int, v: Verdict) -> bool:
         last = cur.fetchone()
         if last and last[1] == v.level:
             cur.execute(
-                "UPDATE valley_status SET rain_1h_mm = %s, water_rise_m = %s, observed_at = %s "
-                "WHERE id = %s",
+                "UPDATE valley_status SET rain_1h_mm = %s, water_rise_m = %s, observed_at = %s, "
+                "est_rise_m = %s, rain_24h_mm = %s, estimated = %s WHERE id = %s",
                 (*params, last[0]),
             )
             return False
         cur.execute(
-            "INSERT INTO valley_status (valley_id, level, rain_1h_mm, water_rise_m, observed_at) "
-            "VALUES (%s, %s, %s, %s, %s)",
+            "INSERT INTO valley_status (valley_id, level, rain_1h_mm, water_rise_m, observed_at, "
+            "est_rise_m, rain_24h_mm, estimated) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
             (valley_id, v.level, *params),
         )
         return True
@@ -259,6 +305,14 @@ def save_status(conn, valley_id: int, v: Verdict) -> bool:
 
 def _fmt(sig: Signal, unit: str) -> str:
     return f"{sig.value}{unit}" if sig.value is not None else f"- ({sig.reason})"
+
+
+def _fmt_est(v: Verdict) -> str:
+    e = v.est
+    if e is None:
+        return ""
+    ai = f"{e.rise:.2f}m" if e.rise is not None else f"- ({e.reason})"
+    return f" | AI 24h {e.rain_24h}mm 추정 {ai}{' → 주의(AI)' if v.estimated else ''}"
 
 
 def run_once() -> dict[str, int]:
@@ -278,9 +332,9 @@ def run_once() -> dict[str, int]:
                     log.exception("%s(id=%s): 푸시 처리 실패 (판정은 저장됨)", name, valley_id)
                 stats["ok"] += 1
                 stats["changed"] += int(changed)
-                log.info("%s: %s%s | 강수1h %s | 수위상승30m %s",
+                log.info("%s: %s%s | 강수1h %s | 수위상승30m %s%s",
                          name, v.level, " (변경)" if changed else "",
-                         _fmt(v.rain, "mm"), _fmt(v.rise, "m"))
+                         _fmt(v.rain, "mm"), _fmt(v.rise, "m"), _fmt_est(v))
             except Exception:
                 stats["failed"] += 1
                 log.exception("%s(id=%s): 판정 실패", name, valley_id)

@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api")
 
 LATEST_STATUS = (
     "SELECT DISTINCT ON (valley_id) valley_id, level, rain_1h_mm, water_rise_m, observed_at, "
-    "ai_explanation, ai_fallback FROM valley_status "
+    "ai_explanation, ai_fallback, estimated, est_rise_m FROM valley_status "
     "WHERE valley_id = ANY(%s) ORDER BY valley_id, changed_at DESC, id DESC"
 )
 RAIN_CALC = {KIND_RAIN_10M: rain_1h, KIND_RAIN_1H: rain_1h_direct}
@@ -52,13 +52,15 @@ def _valley_list(sql: str, params: tuple, x_device_id: str | None) -> dict:
         valleys = cur.fetchall()
         ids = [v[0] for v in valleys]
         cur.execute(LATEST_STATUS, (ids,))
-        status = {r[0]: r[1:5] for r in cur.fetchall()}
+        rows = {r[0]: r for r in cur.fetchall()}
+        status = {vid: r[1:5] for vid, r in rows.items()}
         sources = _sources(cur, ids)
         subs = _subscribed(cur, x_device_id)
     return {
         "updated_at": vv.fmt_time(now),
         "source": vv.source_text(sources),
-        "valleys": [vv.summary_row(v, status.get(v[0]), now, v[0] in subs) for v in valleys],
+        "valleys": [vv.summary_row(v, status.get(v[0]), now, v[0] in subs,
+                                   bool(rows[v[0]][7]) if v[0] in rows else False) for v in valleys],
     }
 
 
@@ -100,6 +102,9 @@ def valley_detail(valley_id: int, x_device_id: str | None = Header(default=None)
             elif role == ROLE_WATER:
                 sig = water_rise_30m(_series(cur, sid, since), now)
                 observations.append(vv.observation("water_rise_30m", sname, sig, thresholds))
+        # AI 추정은 판정 엔진이 저장한 값을 보여 준다 (수위 없음·수위 결측일 때만 값이 있음)
+        if status and status[7] is not None:
+            observations.append(vv.est_observation(status[7], status[3]))
         sources = _sources(cur, [valley_id])
         subs = _subscribed(cur, x_device_id)
     return vv.detail(valley, status, observations, now, valley_id in subs, sources)

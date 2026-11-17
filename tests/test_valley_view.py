@@ -63,6 +63,22 @@ def test_detail_fallback_text():
     assert d["disclaimer"].startswith("판단 보조")
 
 
+
+def test_estimated_flag():
+    st = ("caution", D(2), None, NOW - timedelta(minutes=5))
+    assert vv.summary_row(VALLEY, st, NOW, False, True)["estimated"] is True
+    assert vv.summary_row(VALLEY, st, NOW, False)["estimated"] is False
+    old = ("caution", D(2), None, NOW - timedelta(minutes=40))      # 오래돼서 unknown이면 추정 표시도 끔
+    assert vv.summary_row(VALLEY, old, NOW, False, True)["estimated"] is False
+    d = vv.detail(VALLEY, st + (None, False, True, D("0.08")), [], NOW, False, ["kma"])
+    assert d["estimated"] is True
+
+
+def test_est_observation():
+    o = vv.est_observation(D("0.08"), NOW - timedelta(minutes=4))
+    assert o == {"type": "est_rise_3h", "station": "AI 추정(강수 기반)", "observed_at": "2026-11-09T16:56",
+                 "value": 0.08, "unit": "m", "threshold": 0.07, "note": None, "estimated": True}
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

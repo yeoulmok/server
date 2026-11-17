@@ -57,7 +57,10 @@ CREATE TABLE valley_status (
   observed_at    TIMESTAMPTZ,
   ai_explanation TEXT,
   ai_fallback    BOOLEAN NOT NULL DEFAULT FALSE,
-  changed_at     TIMESTAMPTZ NOT NULL DEFAULT now()
+  changed_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  est_rise_m     NUMERIC(5,2),          -- AI 추정 상승폭 (수위 없음·결측일 때만)
+  rain_24h_mm    NUMERIC(6,1),          -- 규칙용 24시간 강수
+  estimated      BOOLEAN NOT NULL DEFAULT FALSE   -- 단계가 AI 추정으로 정해졌는지
 );
 
 CREATE TABLE devices (
