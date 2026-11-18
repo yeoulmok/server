@@ -28,6 +28,8 @@ from zoneinfo import ZoneInfo
 from app.valley_view import TEXTS
 
 log = logging.getLogger("push")
+# httpx logs every request URL at INFO, and the APNs URL contains the full device token
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 KST = ZoneInfo("Asia/Seoul")
 RANK = {"safe": 0, "caution": 1, "danger": 2, "evacuate": 3}
