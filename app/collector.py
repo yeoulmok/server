@@ -284,6 +284,28 @@ def run_once() -> dict[str, int]:
     return stats
 
 
+def backfill(code: str, hours: int) -> int:
+    """HRFCO 관측소(code)의 지난 `hours`시간 10분 자료를 받아 저장. 저장한 칸 수를 돌려준다."""
+    from app.replay import fetch                # HRFCO 10분 자료를 하루씩 나눠 받는 함수 재사용
+
+    end = _floor_minutes(datetime.now(KST), 10)
+    start = end - timedelta(hours=hours)
+    total = 0
+    with connect() as conn:
+        targets = [st for st in load_stations(conn) if st.source == "hrfco" and st.code == code]
+        if not targets:
+            log.error("관측소 %s 없음 (DB stations에 먼저 추가)", code)
+            return 0
+        for st in targets:
+            rows = fetch(st.code, st.kind, start, end)
+            n = save(conn, st, sorted(rows.items()))
+            filled = sum(v is not None for v in rows.values())
+            log.info("%s(%s): %s ~ %s, %d칸 저장 (값 있는 칸 %d)", st.code, st.kind,
+                     f"{start:%m/%d %H:%M}", f"{end:%m/%d %H:%M}", n, filled)
+            total += n
+    return total
+
+
 def main() -> None:
     logging.basicConfig(
         level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -292,6 +314,14 @@ def main() -> None:
 
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+    if "--backfill" in sys.argv:
+        # 새 관측소의 지난 자료를 한 번에 받기 (예: AI가 72시간 강수를 봐야 하는 계곡)
+        #   python -m app.collector --backfill 10064070 [시간, 기본 73]
+        i = sys.argv.index("--backfill")
+        code = sys.argv[i + 1]
+        hours = int(sys.argv[i + 2]) if len(sys.argv) > i + 2 else 73
+        sys.exit(0 if backfill(code, hours) else 1)
 
     if "--once" in sys.argv:
         stats = run_once()
