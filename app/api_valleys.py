@@ -8,18 +8,24 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from fastapi import APIRouter, Header
+import logging
+
+from fastapi import APIRouter, Header, Request
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+from app import ask
 
 from app import valley_view as vv
 from app.judge import (KIND_RAIN_1H, KIND_RAIN_10M, LOOKBACK, ROLE_RAIN, ROLE_WATER, _series,
                        connect, rain_1h, rain_1h_direct, water_rise_30m)
 
 router = APIRouter(prefix="/api")
+log = logging.getLogger("api")
 
 LATEST_STATUS = (
     "SELECT DISTINCT ON (valley_id) valley_id, level, rain_1h_mm, water_rise_m, observed_at, "
-    "ai_explanation, ai_fallback, estimated, est_rise_m FROM valley_status "
+    "ai_explanation, ai_fallback, estimated, est_rise_m, rain_24h_mm FROM valley_status "
     "WHERE valley_id = ANY(%s) ORDER BY valley_id, changed_at DESC, id DESC"
 )
 RAIN_CALC = {KIND_RAIN_10M: rain_1h, KIND_RAIN_1H: rain_1h_direct}
@@ -108,3 +114,62 @@ def valley_detail(valley_id: int, x_device_id: str | None = Header(default=None)
         sources = _sources(cur, [valley_id])
         subs = _subscribed(cur, x_device_id)
     return vv.detail(valley, status, observations, now, valley_id in subs, sources)
+
+
+class AskBody(BaseModel):
+    question: str | None = None
+
+
+def _ask_error(status: int, code: str, message: str) -> JSONResponse:
+    return JSONResponse(status_code=status, content={"error": {"code": code, "message": message}})
+
+
+@router.post("/valleys/{valley_id}/ask")
+def ask_valley(valley_id: int, body: AskBody, request: Request,
+               x_device_id: str | None = Header(default=None)):
+    """11번 (명세 v0.5). 질문 → 그 계곡의 지금 판정·관측값만으로 AI가 답한다. 실패하면 정해진 문구."""
+    question = ask.normalize_question(body.question)
+    if question is None:
+        return _ask_error(400, "QUESTION_INVALID", "질문을 1~200자로 입력해 주세요")
+    requester = x_device_id or request.headers.get("cf-connecting-ip") or (
+        request.client.host if request.client else "unknown")
+    if not ask.LIMITER.allow(requester):
+        return _ask_error(429, "TOO_MANY_QUESTIONS", "질문이 많아요. 잠시 후 다시 물어봐 주세요")
+
+    now = datetime.now(vv.KST)
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id, name FROM valleys WHERE id = %s AND is_active", (valley_id,))
+        valley = cur.fetchone()
+        if not valley:
+            return _not_found(valley_id)
+        cur.execute(LATEST_STATUS, ([valley_id],))
+        row = cur.fetchone()
+        cur.execute("SELECT level, rain_1h_mm, water_rise_m FROM valley_thresholds WHERE valley_id = %s",
+                    (valley_id,))
+        thresholds = cur.fetchall()
+        sources = _sources(cur, [valley_id])
+
+    # row = (valley_id, level, rain, rise, observed_at, ai_exp, ai_fb, estimated, est_rise, rain_24h)
+    status = (row[1], row[2], row[3], row[4], row[7], row[8], row[9]) if row else None
+    key = (valley_id, status, question.lower())
+    a = ask.LIMITER.cached(key)
+    if a is None:
+        if status is not None and not ask.LIMITER.ai_budget():
+            a = ask.Answer(ask.fixed_answer(vv.freshness(status[0], status[3], now)[0]), True,
+                           vv.freshness(status[0], status[3], now)[0], "하루 한도")
+        else:
+            a = ask.answer(valley[1], status, thresholds, question, now)
+        ask.LIMITER.remember(key, a)
+        if a.reason:
+            log.info("질문 답변 고정 문구 (%s, 계곡 %s)", a.reason, valley_id)
+    return {
+        "updated_at": vv.fmt_time(now),
+        "valley_id": valley_id,
+        "question": question,
+        "answer": a.answer,
+        "ai_fallback": a.ai_fallback,
+        "level": a.level,
+        "observed_at": vv.fmt_time(status[3]) if status else None,
+        "disclaimer": vv.DISCLAIMER,
+        "source": vv.source_text(sources),
+    }

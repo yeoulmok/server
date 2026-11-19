@@ -132,18 +132,22 @@ def _num(s: str) -> Decimal | None:
         return None
 
 
-def check(text: str, f: Facts) -> str | None:
-    """문제가 있으면 이유, 없으면 None."""
+def check(text: str, f: Facts, max_chars: int = MAX_CHARS, strict_levels: bool = True) -> str | None:
+    """문제가 있으면 이유, 없으면 None.
+    strict_levels=False(질문 답변용): '위험 신호가 없어요'처럼 일반 단어는 허용하고,
+    '위험 단계'처럼 다른 단계를 가리키는 말만 막는다."""
     if not text:
         return "빈 응답"
-    if len(text) > MAX_CHARS:
+    if len(text) > max_chars:
         return f"너무 김 ({len(text)}자)"
     allowed = {_num(n) for n in f.numbers | WINDOW_NUMBERS}
     for n in NUMBER.findall(text):
         if _num(n) not in allowed:
             return f"사실에 없는 숫자 {n}"
     for lvl, ko in LEVEL_KO.items():
-        if lvl != f.level and ko in text:
+        if lvl == f.level:
+            continue
+        if (ko in text) if strict_levels or lvl == "unknown" else re.search(ko + r"\s*(단계|상태|경보)", text):
             return f"다른 단계 이름 '{ko}'"
     if FORECAST.search(text):
         return "도착 시간 예측"
@@ -158,7 +162,7 @@ def ready() -> bool:
     return bool(os.environ.get("ANTHROPIC_API_KEY"))
 
 
-def call_claude(system: str, user: str, client=None) -> str:
+def call_claude(system: str, user: str, client=None, max_tokens: int = 300) -> str:
     own = client is None
     if own:
         import httpx
@@ -171,7 +175,7 @@ def call_claude(system: str, user: str, client=None) -> str:
             "content-type": "application/json",
         }, json={
             "model": os.environ.get("ANTHROPIC_MODEL", DEFAULT_MODEL),
-            "max_tokens": 300,
+            "max_tokens": max_tokens,
             "system": system,
             "messages": [{"role": "user", "content": user}],
         })
