@@ -258,6 +258,8 @@ def run_once() -> dict[str, int]:
     with connect() as conn, httpx.Client(timeout=HTTP_TIMEOUT) as client:
         stations = load_stations(conn)
         for (source, kind), group in _group(stations).items():
+            if source == "replay":
+                continue                      # 시연용 재생 관측소 (app/replay.py가 직접 씀)
             fetcher = FETCHERS.get((source, kind))
             if fetcher is None:
                 log.warning("지원하지 않는 조합 source=%s kind=%s (%d곳) 건너뜀",

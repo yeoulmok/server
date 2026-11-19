@@ -316,30 +316,44 @@ def _fmt_est(v: Verdict) -> str:
     return f" | AI 24h {e.rain_24h}mm 추정 {ai}{' → 주의(AI)' if v.estimated else ''}"
 
 
+# 재생(app/replay.py)이 쓰는 관측소가 붙은 시연 계곡은 평소 판정에서 빼고 재생기가 직접 판정한다
+ACTIVE_VALLEYS = (
+    "SELECT v.id, v.name FROM valleys v WHERE v.is_active AND NOT EXISTS ("
+    " SELECT 1 FROM valley_stations vs JOIN stations s ON s.id = vs.station_id"
+    " WHERE vs.valley_id = v.id AND s.source = 'replay') ORDER BY v.id"
+)
+
+
+def process_valley(conn, valley_id: int, name: str, now: datetime) -> tuple[Verdict, bool]:
+    """계곡 하나: 판정 → 저장 → AI 설명 → 푸시. (설명·푸시가 실패해도 판정은 저장됨)"""
+    v = evaluate_valley(conn, valley_id, now)
+    changed = save_status(conn, valley_id, v)
+    try:
+        explain.after_judge(conn, valley_id, name, v, v.thresholds, changed, now)
+    except Exception:
+        log.exception("%s(id=%s): AI 설명 실패 (판정은 저장됨)", name, valley_id)
+    try:
+        push.after_judge(conn, valley_id, name, now)
+    except Exception:
+        log.exception("%s(id=%s): 푸시 처리 실패 (판정은 저장됨)", name, valley_id)
+    log.info("%s: %s%s | 강수1h %s | 수위상승30m %s%s",
+             name, v.level, " (변경)" if changed else "",
+             _fmt(v.rain, "mm"), _fmt(v.rise, "m"), _fmt_est(v))
+    return v, changed
+
+
 def run_once() -> dict[str, int]:
     now = datetime.now(KST)
     stats = {"ok": 0, "failed": 0, "changed": 0}
     with connect() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, name FROM valleys WHERE is_active ORDER BY id")
+            cur.execute(ACTIVE_VALLEYS)
             valleys = cur.fetchall()
         for valley_id, name in valleys:
             try:
-                v = evaluate_valley(conn, valley_id, now)
-                changed = save_status(conn, valley_id, v)
-                try:
-                    explain.after_judge(conn, valley_id, name, v, v.thresholds, changed, now)
-                except Exception:
-                    log.exception("%s(id=%s): AI 설명 실패 (판정은 저장됨)", name, valley_id)
-                try:
-                    push.after_judge(conn, valley_id, name, now)
-                except Exception:
-                    log.exception("%s(id=%s): 푸시 처리 실패 (판정은 저장됨)", name, valley_id)
+                _, changed = process_valley(conn, valley_id, name, now)
                 stats["ok"] += 1
                 stats["changed"] += int(changed)
-                log.info("%s: %s%s | 강수1h %s | 수위상승30m %s%s",
-                         name, v.level, " (변경)" if changed else "",
-                         _fmt(v.rain, "mm"), _fmt(v.rise, "m"), _fmt_est(v))
             except Exception:
                 stats["failed"] += 1
                 log.exception("%s(id=%s): 판정 실패", name, valley_id)

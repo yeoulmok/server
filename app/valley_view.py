@@ -20,7 +20,7 @@ STALE_FLAG = timedelta(minutes=15)
 UNKNOWN_AFTER = timedelta(minutes=30)
 
 ALERT_ORDER = ("caution", "danger", "evacuate")
-SOURCE_NAMES = {"hrfco": "한강홍수통제소", "kma": "기상청"}
+SOURCE_NAMES = {"hrfco": "한강홍수통제소", "kma": "기상청", "replay": "한강홍수통제소 2026년 기록 재생(시연)"}
 DISCLAIMER = "판단 보조 정보이며 공식 재난경보를 대체하지 않습니다."
 
 # 고정 문구 (AI 설명이 없을 때). 문구는 팀 검토 전 초안.
