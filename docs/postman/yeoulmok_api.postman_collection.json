@@ -1,7 +1,7 @@
 {
   "info": {
-    "name": "여울목 API (명세 v0.2)",
-    "description": "여울목 서버 API 점검용. 명세 10개 중 구현된 8개(health, devices POST/PATCH, valleys, valleys/{id}, me/valleys, me/subscriptions PUT/DELETE).\n\n전체 실행: 컬렉션 오른쪽 ⋯ → Run collection → Run.\n2번 폴더는 순서대로 실행해야 함 (기기 등록 → device_id 저장 → 나머지가 그 값을 씀).\n실행하면 DB에 테스트 기기 1개가 남음 (apns_token 없음, 구독은 마지막에 해제).",
+    "name": "여울목 API (명세 v0.5)",
+    "description": "여울목 서버 API 점검용. 명세 11개 중 구현된 9개(health, devices POST/PATCH, valleys, valleys/{id}, me/valleys, me/subscriptions PUT/DELETE, valleys/{id}/ask).\n\n전체 실행: 컬렉션 오른쪽 ⋯ → Run collection → Run.\n2번 폴더는 순서대로 실행해야 함 (기기 등록 → device_id 저장 → 나머지가 그 값을 씀).\n실행하면 DB에 테스트 기기 1개가 남음 (apns_token 없음, 구독은 마지막에 해제).\n4번 폴더(AI 질문)는 Claude API를 실제로 부름.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -83,6 +83,7 @@
                   "    [\"rain_1h_mm\",\"water_rise_30m_m\"].forEach(k => pm.expect(v[k] === null || typeof v[k] === \"number\").to.be.true);",
                   "  });",
                   "  pm.test(`[${v.name}] stale은 true/false`, () => pm.expect(v.stale).to.be.a(\"boolean\"));",
+                  "  pm.test(`[${v.name}] estimated는 true/false (v0.4)`, () => pm.expect(v.estimated).to.be.a(\"boolean\"));",
                   "});",
                   "console.log(JSON.stringify(j.valleys.map(v => [v.name, v.level, v.rain_1h_mm, v.water_rise_30m_m, v.observed_at, v.stale])));"
                 ]
@@ -153,7 +154,11 @@
                   "pm.test(\"level 5종\", () => pm.expect([\"safe\",\"caution\",\"danger\",\"evacuate\",\"unknown\"]).to.include(j.level));",
                   "pm.test(\"관측 근거 있음\", () => pm.expect(j.observations.length).to.be.above(0));",
                   "pm.test(\"면책 문구·출처·행동 요령\", () => { pm.expect(j.disclaimer).to.be.a(\"string\"); pm.expect(j.source).to.include(\"자료\"); pm.expect(j.actions.length).to.be.above(0); });",
-                  "j.observations.forEach(o => pm.test(`[${o.station}] value가 null이면 note에 이유`, () => { if (o.value === null) pm.expect(o.note).to.be.a(\"string\"); }));"
+                  "j.observations.forEach(o => pm.test(`[${o.station}] value가 null이면 note에 이유`, () => { if (o.value === null) pm.expect(o.note).to.be.a(\"string\"); }));",
+                  "pm.test(\"estimated는 true/false (v0.4)\", () => pm.expect(j.estimated).to.be.a(\"boolean\"));",
+                  "pm.test(\"판정 불가면 estimated는 false\", () => { if (j.level === \"unknown\") pm.expect(j.estimated).to.be.false; });",
+                  "j.observations.filter(o => o.type === \"est_rise_3h\").forEach(o => pm.test(\"AI 추정 줄은 estimated:true, 기준 0.07m\", () => { pm.expect(o.estimated).to.be.true; pm.expect(o.threshold).to.eql(0.07); }));",
+                  "pm.test(\"ai_fallback이 false면 ai_explanation 문장 있음\", () => { if (!j.ai_fallback) pm.expect(j.ai_explanation).to.be.a(\"string\").and.not.empty; });"
                 ]
               }
             }
@@ -628,6 +633,158 @@
               ]
             },
             "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"VALLEY_NOT_FOUND\", () => pm.expect(pm.response.json().error.code).to.eql(\"VALLEY_NOT_FOUND\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. AI 질문 답변 (명세 11번)",
+      "description": "Claude API를 실제로 부름 (한 번에 몇 원 수준). 같은 질문은 10분 동안 같은 답, 기기·IP당 1시간 10번까지.",
+      "item": [
+        {
+          "name": "질문 POST /valleys/{{valley_id}}/ask",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Device-Id",
+                "value": "{{device_id}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/valleys/{{valley_id}}/ask",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "valleys",
+                "{{valley_id}}",
+                "ask"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"question\": \"여기 들어가도 돼요?\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test(\"answer 문장 있음\", () => pm.expect(j.answer).to.be.a(\"string\").and.not.empty);",
+                  "pm.test(\"ai_fallback은 true/false\", () => pm.expect(j.ai_fallback).to.be.a(\"boolean\"));",
+                  "pm.test(\"level 5종\", () => pm.expect([\"safe\",\"caution\",\"danger\",\"evacuate\",\"unknown\"]).to.include(j.level));",
+                  "pm.test(\"질문을 그대로 돌려줌\", () => pm.expect(j.question).to.eql(\"여기 들어가도 돼요?\"));",
+                  "pm.test(\"면책 문구·출처\", () => { pm.expect(j.disclaimer).to.be.a(\"string\"); pm.expect(j.source).to.include(\"자료\"); });",
+                  "pm.test(\"판정 불가면 AI를 안 부름 (ai_fallback true)\", () => { if (j.level === \"unknown\") pm.expect(j.ai_fallback).to.be.true; });",
+                  "console.log(j.ai_fallback ? \"[정해진 문구] \" + j.answer : \"[AI] \" + j.answer);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "빈 질문 → 400",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/valleys/{{valley_id}}/ask",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "valleys",
+                "{{valley_id}}",
+                "ask"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"question\": \"   \"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"QUESTION_INVALID\", () => pm.expect(pm.response.json().error.code).to.eql(\"QUESTION_INVALID\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "없는 계곡에 질문 → 404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/valleys/99999/ask",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "valleys",
+                "99999",
+                "ask"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\"question\": \"여기 들어가도 돼요?\"}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
           },
           "event": [
             {
