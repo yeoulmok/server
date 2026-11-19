@@ -31,13 +31,13 @@ import logging
 import os
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from app import estimate as est_mod
-from app import push
+from app import explain, push
 from app.estimate import Estimate
 
 log = logging.getLogger("judge")
@@ -86,6 +86,7 @@ class Verdict:
     rise: Signal
     est: Estimate | None = None     # AI 확인 단계를 봤을 때만 (수위 없음·수위 결측)
     estimated: bool = False         # 최종 단계가 AI 추정 때문에 정해졌으면 True
+    thresholds: tuple = ()          # 이 계곡 기준값 (AI 설명에 씀)
 
     @property
     def observed_at(self) -> datetime | None:
@@ -269,7 +270,7 @@ def evaluate_valley(conn, valley_id: int, now: datetime) -> Verdict:
     if not has_water or rise.value is None:
         model = est_mod.load_model()
         est = est_mod.merge([est_mod.estimate(s, now, per_hour[kind], model) for kind, s in rain_series])
-    return decide(rain, rise, thresholds, est, has_water)
+    return replace(decide(rain, rise, thresholds, est, has_water), thresholds=tuple(thresholds))
 
 
 def save_status(conn, valley_id: int, v: Verdict) -> bool:
@@ -326,6 +327,10 @@ def run_once() -> dict[str, int]:
             try:
                 v = evaluate_valley(conn, valley_id, now)
                 changed = save_status(conn, valley_id, v)
+                try:
+                    explain.after_judge(conn, valley_id, name, v, v.thresholds, changed, now)
+                except Exception:
+                    log.exception("%s(id=%s): AI 설명 실패 (판정은 저장됨)", name, valley_id)
                 try:
                     push.after_judge(conn, valley_id, name, now)
                 except Exception:
