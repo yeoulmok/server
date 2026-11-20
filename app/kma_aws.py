@@ -64,12 +64,41 @@ def _decode(raw: bytes) -> str:
 def fetch_kma_aws(client, station, now: datetime) -> list[tuple[datetime, Decimal | None]]:
     end = now.astimezone(KST).replace(second=0, microsecond=0)
     end -= timedelta(minutes=end.minute % 10)
-    start = end - LOOKBACK
+    return _get(client, station.code, end - LOOKBACK, end)
+
+
+RANGE_CHUNK = timedelta(hours=6)     # 매분 자료라 한 번에 너무 길게 받지 않음 (6시간 = 360줄)
+
+
+def fetch_range(code: str, start: datetime, end: datetime, client=None) -> dict[datetime, Decimal | None]:
+    """지난 자료 (backfill·재현용). 6시간씩 나눠 받아 10분 정각만 모은다. 한 조각이 비어도 계속."""
+    own = client is None
+    if own:
+        import httpx
+
+        client = httpx.Client(timeout=30)
+    out: dict[datetime, Decimal | None] = {}
+    try:
+        t = start
+        while t < end:
+            t2 = min(t + RANGE_CHUNK, end)
+            try:
+                out.update(_get(client, code, t, t2))
+            except ValueError:
+                pass                         # 그 조각만 없음 → 비워 둠
+            t = t2
+    finally:
+        if own:
+            client.close()
+    return out
+
+
+def _get(client, code: str, start: datetime, end: datetime) -> list[tuple[datetime, Decimal | None]]:
     fmt = "%Y%m%d%H%M"
     resp = client.get(URL, params={
         "tm1": start.strftime(fmt),
         "tm2": end.strftime(fmt),
-        "stn": station.code,
+        "stn": code,
         "disp": "0",
         "help": "0",
         "authKey": os.environ["KMA_KEY"],

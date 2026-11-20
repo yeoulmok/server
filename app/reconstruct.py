@@ -11,6 +11,7 @@
 
   python -m app.reconstruct                                   # 서곡리 2025-07-19 14:09 (기본)
   python -m app.reconstruct --accident "2025-07-19 14:09" --hours 12 --after 2
+  python -m app.reconstruct --valley 구룡사계곡 --source kma --station 591 --accident "2025-07-19 14:09"
 """
 
 from __future__ import annotations
@@ -110,6 +111,16 @@ def load_series(code: str, start: datetime, end: datetime,
     return J.KIND_RAIN_1H, s1h
 
 
+def load_kma(code: str, start: datetime, end: datetime, fetch=None) -> tuple[str, dict]:
+    """기상청 AWS (1시간 누적 강수를 10분마다)."""
+    if fetch is None:
+        from app.kma_aws import fetch_range as fetch
+    s = fetch(code, start, end)
+    expected = int((end - start) / STEP) + 1
+    print(f"  기상청 AWS {code}: {sum(v is not None for v in s.values())}/{expected}칸")
+    return J.KIND_RAIN_1H, s
+
+
 def load_thresholds(valley: str) -> list[J.Threshold]:
     try:
         with J.connect() as conn, conn.cursor() as cur:
@@ -142,7 +153,8 @@ def judge_at(series: dict, kind: str, t: datetime, thresholds, model) -> tuple[J
 
 
 def run(series: dict, kind: str, start: datetime, end: datetime, thresholds, model) -> list[Row]:
-    step = STEP if kind == J.KIND_RAIN_10M else HOUR
+    # 10분 간격 자료(HRFCO 10분, 기상청 AWS 1시간 누적을 10분마다)면 10분마다, HRFCO 1시간 자료면 1시간마다
+    step = STEP if kind == J.KIND_RAIN_10M or any(k.minute for k in series) else HOUR
     rows, t = [], start
     while t <= end:
         v, rule_only = judge_at(series, kind, t, thresholds, model)
@@ -258,7 +270,8 @@ def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="python -m app.reconstruct", description="사고 당일 재현 (DB·푸시 안 건드림)")
     p.add_argument("--accident", default=DEFAULT_ACCIDENT, help='사고 시각 "YYYY-MM-DD HH:MM" (한국시간)')
     p.add_argument("--valley", default=DEFAULT_VALLEY, help="기준값을 읽을 계곡 이름")
-    p.add_argument("--station", default=DEFAULT_STATION, help="HRFCO 강수 관측소 코드")
+    p.add_argument("--station", default=DEFAULT_STATION, help="강수 관측소 코드 (HRFCO 또는 기상청 AWS 번호)")
+    p.add_argument("--source", choices=("hrfco", "kma"), default="hrfco", help="kma = 기상청 AWS (예: 591 치악산)")
     p.add_argument("--hours", type=float, default=12, help="사고 몇 시간 전부터 볼지")
     p.add_argument("--after", type=float, default=2, help="사고 뒤 몇 시간까지 볼지")
     a = p.parse_args(argv)
@@ -267,10 +280,13 @@ def main(argv=None) -> None:
     start = replay.floor10(accident - timedelta(hours=a.hours))
     end = replay.floor10(accident + timedelta(hours=a.after))
     print(f"{a.valley} / 관측소 {a.station} / {start:%m/%d %H:%M} ~ {end:%m/%d %H:%M}")
-    kind, series = load_series(a.station, start - PAD, end)
+    if a.source == "kma":
+        kind, series = load_kma(a.station, start - PAD, end)
+    else:
+        kind, series = load_series(a.station, start - PAD, end)
     if not any(v is not None for v in series.values()):
         raise SystemExit("강수 자료를 하나도 못 받음 (관측소 코드·날짜 확인)")
-    if kind == J.KIND_RAIN_1H:
+    if kind == J.KIND_RAIN_1H and a.source == "hrfco":
         start = start.replace(minute=0)
     thresholds = load_thresholds(a.valley)
     model = est_mod.load_model()
@@ -282,7 +298,7 @@ def main(argv=None) -> None:
     print()
     lines = summary(rows, accident)
     print("\n".join(lines))
-    path = OUT_DIR / f"{accident:%Y-%m-%d}_{a.station}.csv"
+    path = OUT_DIR / f"{accident:%Y-%m-%d}_{a.source}{a.station}.csv"
     save_csv(rows, path)
     print(f"\nCSV: {path}")
 
