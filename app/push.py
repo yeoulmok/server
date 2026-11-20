@@ -71,10 +71,21 @@ def is_night(now: datetime) -> bool:
     return h >= NIGHT_START or h < NIGHT_END
 
 
+ALARM_LEVELS = ("danger", "evacuate")
+ALARM_SOUND = "alarm.caf"        # app bundle sound (iOS app PR #69)
+
+
 def payload(valley_id: int, name: str, level: str, now: datetime) -> dict:
+    """위험·대피: 경보음 + Time Sensitive(집중 모드 통과), 밤에도.
+    주의·안전 복귀: 기본 소리, 밤(22~06시)엔 무음. (긴급 알림 Critical Alert는 Apple 승인 전이라 안 씀)"""
     aps: dict = {"alert": {"title": f"{name} · {LEVEL_KO[level]}", "body": TEXTS[level][0]}}
-    if not (level in ("safe", "caution") and is_night(now)):
-        aps["sound"] = "default"
+    if level in ALARM_LEVELS:
+        aps["sound"] = ALARM_SOUND
+        aps["interruption-level"] = "time-sensitive"
+    else:
+        if not is_night(now):
+            aps["sound"] = "default"
+        aps["interruption-level"] = "active"
     return {"aps": aps, "valley_id": valley_id, "level": level}
 
 
@@ -225,7 +236,8 @@ def after_judge(conn, valley_id: int, name: str, now: datetime) -> Plan | None:
 # 시험 발송:  python -m app.push --test <device_id>
 # ---------------------------------------------------------------------------
 
-def test_send(device_id: str) -> int:
+def test_send(device_id: str, level: str | None = None) -> int:
+    """level을 주면 실제 경보와 같은 내용(소리·interruption-level 포함)으로 보냄. 단계가 바뀌거나 기록이 남지는 않음."""
     from app.judge import connect
 
     now = datetime.now(KST)
@@ -238,8 +250,11 @@ def test_send(device_id: str) -> int:
         if not row or not row[0]:
             print("이 기기에 APNs 토큰이 없음:", device_id)
             return 1
-        body = {"aps": {"alert": {"title": "여울목 · 시험 알림", "body": "푸시 연결 확인용이에요"},
-                        "sound": "default"}, "valley_id": 0, "level": "test"}
+        if level:
+            body = payload(0, "여울목 시험", level, now)
+        else:
+            body = {"aps": {"alert": {"title": "여울목 · 시험 알림", "body": "푸시 연결 확인용이에요"},
+                            "sound": "default"}, "valley_id": 0, "level": "test"}
         ok, dead = send([row[0]], body, now)
         _forget_tokens(cur, dead)
     print(f"서버: {apns_host()} → 성공 {ok}/1" + (" (토큰 무효 → 삭제함)" if dead else ""))
@@ -250,7 +265,10 @@ if __name__ == "__main__":
     import sys
 
     logging.basicConfig(level="INFO", format="%(levelname)s %(name)s: %(message)s")
-    if len(sys.argv) == 3 and sys.argv[1] == "--test":
-        sys.exit(test_send(sys.argv[2]))
-    print("사용법: python -m app.push --test <device_id>")
+    if len(sys.argv) in (3, 4) and sys.argv[1] == "--test":
+        lvl = sys.argv[3] if len(sys.argv) == 4 else None
+        if lvl and lvl not in LEVEL_KO:
+            sys.exit(f"단계는 {', '.join(LEVEL_KO)} 중 하나")
+        sys.exit(test_send(sys.argv[2], lvl))
+    print("사용법: python -m app.push --test <device_id> [caution|danger|evacuate]")
     sys.exit(2)
