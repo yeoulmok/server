@@ -6,15 +6,16 @@ app/main.py 에서 app.include_router(router) 로 붙인다.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import logging
 
-from fastapi import APIRouter, Header, Request
+from fastapi import APIRouter, Header, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app import ask
+from app import estimate as est_mod
 
 from app import valley_view as vv
 from app.judge import (KIND_RAIN_1H, KIND_RAIN_10M, LOOKBACK, ROLE_RAIN, ROLE_WATER, _series,
@@ -29,6 +30,7 @@ LATEST_STATUS = (
     "WHERE valley_id = ANY(%s) ORDER BY valley_id, changed_at DESC, id DESC"
 )
 RAIN_CALC = {KIND_RAIN_10M: rain_1h, KIND_RAIN_1H: rain_1h_direct}
+PER_HOUR = {KIND_RAIN_10M: est_mod.hourly_from_10min, KIND_RAIN_1H: est_mod.hourly_from_1h}
 
 
 def _subscribed(cur, device_id: str | None) -> set[int]:
@@ -101,10 +103,13 @@ def valley_detail(valley_id: int, x_device_id: str | None = Header(default=None)
             "ORDER BY vs.role DESC, s.id", (valley_id,))   # upstream_rain 먼저
         since = now - LOOKBACK
         observations = []
+        rain_24h = []
         for role, sid, kind, sname in cur.fetchall():
             if role == ROLE_RAIN and kind in RAIN_CALC:
-                sig = RAIN_CALC[kind](_series(cur, sid, since), now)
+                day = _series(cur, sid, now - timedelta(hours=25))
+                sig = RAIN_CALC[kind]({t: v for t, v in day.items() if t >= since}, now)
                 observations.append(vv.observation("rain_1h", sname, sig, thresholds))
+                rain_24h.append(est_mod.rain_sum(day, now, PER_HOUR[kind]))
             elif role == ROLE_WATER:
                 sig = water_rise_30m(_series(cur, sid, since), now)
                 observations.append(vv.observation("water_rise_30m", sname, sig, thresholds))
@@ -113,7 +118,50 @@ def valley_detail(valley_id: int, x_device_id: str | None = Header(default=None)
             observations.append(vv.est_observation(status[7], status[3]))
         sources = _sources(cur, [valley_id])
         subs = _subscribed(cur, x_device_id)
-    return vv.detail(valley, status, observations, now, valley_id in subs, sources)
+    r24 = [r for r in rain_24h if r is not None]
+    return vv.detail(valley, status, observations, now, valley_id in subs, sources,
+                     max(r24) if r24 else None)
+
+
+@router.get("/valleys/{valley_id}/history")
+def valley_history(valley_id: int, hours: int = Query(default=3)):
+    """12번 (명세 v0.6). 최근 hours시간(1~24, 기본 3) 10분 간격 기록 — 그래프용. 판정과 같은 계산."""
+    hours = min(max(hours, 1), 24)
+    now = datetime.now(vv.KST)
+    times = vv.history_times(now, hours)
+    since = times[0] - timedelta(hours=1, minutes=10)       # 첫 칸의 1시간 강수·30분 상승까지
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id FROM valleys WHERE id = %s AND is_active", (valley_id,))
+        if not cur.fetchone():
+            return _not_found(valley_id)
+        cur.execute("SELECT level, rain_1h_mm, water_rise_m FROM valley_thresholds WHERE valley_id = %s",
+                    (valley_id,))
+        thresholds = cur.fetchall()
+        cur.execute("SELECT vs.role, s.id, s.kind FROM valley_stations vs "
+                    "JOIN stations s ON s.id = vs.station_id WHERE vs.valley_id = %s", (valley_id,))
+        links = cur.fetchall()
+        rain_sources = [(RAIN_CALC[k], _series(cur, sid, since)) for role, sid, k in links
+                        if role == ROLE_RAIN and k in RAIN_CALC]
+        water_series = [_series(cur, sid, since) for role, sid, k in links if role == ROLE_WATER]
+        # 기록 첫 칸 직전의 단계부터 (그 전에 바뀐 마지막 단계 + 기간 안의 변화)
+        cur.execute("(SELECT changed_at, level FROM valley_status WHERE valley_id = %s AND changed_at <= %s "
+                    " ORDER BY changed_at DESC, id DESC LIMIT 1) UNION ALL "
+                    "(SELECT changed_at, level FROM valley_status WHERE valley_id = %s AND changed_at > %s) "
+                    "ORDER BY 1", (valley_id, times[0], valley_id, times[0]))
+        status_rows = cur.fetchall()
+        sources = _sources(cur, [valley_id])
+    limits = {"rain_1h_mm": vv.level_limits({t[0]: t[1] for t in thresholds}),
+              "water_rise_30m_m": vv.level_limits({t[0]: t[2] for t in thresholds})}
+    return {
+        "updated_at": vv.fmt_time(now),
+        "valley_id": valley_id,
+        "hours": hours,
+        "step_minutes": 10,
+        "has_water": bool(water_series),
+        "thresholds": limits,
+        "points": vv.history_points(times, rain_sources, water_series, status_rows),
+        "source": vv.source_text(sources),
+    }
 
 
 class AskBody(BaseModel):

@@ -77,7 +77,42 @@ def test_estimated_flag():
 def test_est_observation():
     o = vv.est_observation(D("0.08"), NOW - timedelta(minutes=4))
     assert o == {"type": "est_rise_3h", "station": "AI 추정(강수 기반)", "observed_at": "2026-11-09T16:56",
-                 "value": 0.08, "unit": "m", "threshold": 0.07, "note": None, "estimated": True}
+                 "value": 0.08, "unit": "m", "threshold": 0.07,
+                 "thresholds": {"caution": 0.07, "danger": None, "evacuate": None},
+                 "note": None, "estimated": True}
+
+
+def test_thresholds_per_level_and_rain_24h():
+    from app.judge import Signal
+    th = [("caution", D("15.0"), D("0.10")), ("danger", D("25.0"), D("0.20")), ("evacuate", D("40.0"), D("0.30"))]
+    o = vv.observation("rain_1h", "원주 신림(AWS)", Signal(D("18.0"), NOW), th)
+    assert o["threshold"] == 15.0 and o["thresholds"] == {"caution": 15.0, "danger": 25.0, "evacuate": 40.0}
+    w = vv.observation("water_rise_30m", "동부교", Signal(D("0.06"), NOW), th)
+    assert w["thresholds"] == {"caution": 0.1, "danger": 0.2, "evacuate": 0.3}
+    assert vv.est_observation(D("0.08"), NOW)["thresholds"] == {"caution": 0.07, "danger": None, "evacuate": None}
+    d = vv.detail(VALLEY, None, [], NOW, False, ["kma"], D("31.5"))
+    assert d["rain_24h_mm"] == 31.5 and vv.detail(VALLEY, None, [], NOW, False, ["kma"])["rain_24h_mm"] is None
+
+
+def test_history_points():
+    from app.judge import rain_1h
+    times = vv.history_times(datetime(2026, 8, 22, 5, 37, tzinfo=vv.KST), 1)
+    assert len(times) == 7 and times[-1].minute == 30 and times[0].hour == 4
+    step = timedelta(minutes=10)
+    t0 = times[0] - timedelta(hours=1)
+    rain = {t0 + step * i: D("2.0") for i in range(13)}                         # 10분 2mm → 1시간 12mm
+    water = {t0 + step * i: D("0.20") + D("0.05") * max(0, i - 9) for i in range(13)}
+    water[times[2]] = None                                                       # 빈 칸
+    status = [(times[0] - step, "safe"), (times[4], "caution")]
+    pts = vv.history_points(times, [(rain_1h, rain)], [water], status)
+    assert pts[0]["at"] == "2026-08-22T04:30" and pts[0]["rain_1h_mm"] == 12.0 and pts[0]["level"] == "safe"
+    assert pts[2]["water_level_m"] is None                                        # 값 없는 시각은 null
+    assert pts[4]["level"] == "caution" and pts[-1]["water_level_m"] == 0.35
+    assert pts[-1]["water_rise_30m_m"] == 0.15                                    # 05:30 - 05:00
+    assert all(p["rain_1h_mm"] == 12.0 for p in pts)
+    none = vv.history_points(times[:2], [], [], [])                               # 수위 없는 계곡
+    assert none[0] == {"at": "2026-08-22T04:30", "rain_1h_mm": None, "water_level_m": None,
+                       "water_rise_30m_m": None, "level": None}
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):

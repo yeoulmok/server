@@ -98,6 +98,17 @@ def hourly_rain(series: Series, now: datetime, per_hour) -> tuple[list[Decimal |
     return hours, anchor, None
 
 
+def rain_sum(series: Series, now: datetime, per_hour, hours: int = 24, max_gaps: int = 3) -> Decimal | None:
+    """최근 `hours`시간 강수 합 (화면 표시용). 빈 시간이 max_gaps보다 많으면 None, 그 이하는 0으로."""
+    anchor = _hour_floor(now)
+    if per_hour(series, anchor) is None and now - anchor <= ANCHOR_GRACE:
+        anchor -= HOUR
+    vals = [per_hour(series, anchor - HOUR * i) for i in range(hours)]
+    if sum(v is None for v in vals) > max_gaps:
+        return None
+    return sum((v for v in vals if v is not None), Decimal(0))
+
+
 def features(hours: list[Decimal | None], anchor: datetime) -> dict[str, Decimal | int]:
     h = [v if v is not None else Decimal(0) for v in hours]
     f: dict[str, Decimal | int] = {f"rain_{w}h": sum(h[:w], Decimal(0)) for w in (1, 3, 6, 12, 24, 72)}
