@@ -65,11 +65,11 @@ def test_recovery_survives_unknown_blip():
 
 def test_payload_and_night_sound():
     day = payload(1, "금대리 계곡", "caution", NOW)
-    assert day["aps"]["alert"]["title"] == "금대리 계곡 · 주의" and day["aps"]["sound"] == "default"
+    assert day["aps"]["alert"]["title"] == "금대리 계곡 · 주의" and day["aps"]["sound"] == "caution.caf"
     assert day["valley_id"] == 1 and day["level"] == "caution"
     night = NOW.replace(hour=23)
     assert "sound" not in payload(1, "금대리 계곡", "caution", night)["aps"]
-    assert payload(1, "금대리 계곡", "danger", night)["aps"]["sound"] == "alarm.caf"
+    assert payload(1, "금대리 계곡", "danger", night)["aps"]["sound"] == "danger.caf"
     assert "sound" not in payload(1, "금대리 계곡", "caution", NOW.replace(hour=5))["aps"]
 
 
@@ -77,13 +77,13 @@ def test_payload_and_night_sound():
 
 def test_alarm_levels_time_sensitive_day_and_night():
     night = NOW.replace(hour=23)
-    for lvl in ("danger", "evacuate"):
+    for lvl, snd in (("danger", "danger.caf"), ("evacuate", "evacuate.caf")):
         for t in (NOW, night):
             aps = payload(1, "금대리 계곡", lvl, t)["aps"]
-            assert aps["sound"] == "alarm.caf" and aps["interruption-level"] == "time-sensitive"
-    for lvl in ("caution", "safe"):
+            assert aps["sound"] == snd and aps["interruption-level"] == "time-sensitive"
+    for lvl, snd in (("caution", "caution.caf"), ("safe", "default")):
         assert payload(1, "금대리 계곡", lvl, NOW)["aps"]["interruption-level"] == "active"
-        assert payload(1, "금대리 계곡", lvl, NOW)["aps"]["sound"] == "default"
+        assert payload(1, "금대리 계곡", lvl, NOW)["aps"]["sound"] == snd
         aps = payload(1, "금대리 계곡", lvl, night)["aps"]
         assert "sound" not in aps and aps["interruption-level"] == "active"     # 밤엔 무음 그대로
 
@@ -164,8 +164,9 @@ def test_send_counts_and_collects_dead_tokens():
                             "bad": _Resp(400, "BadDeviceToken"), "busy": _Resp(503, "ServiceUnavailable"),
                             "net": OSError("connection reset")})
         body = push.payload(1, "금대리 계곡", "danger", NOW)
-        ok, dead = push.send(["good", "gone", "bad", "busy", "net"], body, NOW, client=apple)
-        assert ok == 1 and sorted(dead) == ["bad", "gone"]           # 일시 장애(503·끊김)는 토큰 유지
+        res = push.send(["good", "gone", "busy", "net"], body, NOW, client=apple)
+        assert res.ok == 1 and res.dead == ["gone"]                  # 일시 장애(503·끊김)는 토큰 유지
+        assert len(res.detail) == 4 and res.detail[0] == "…good production 200"
         url, headers, sent = apple.calls[0]
         assert url == "https://api.push.apple.com/3/device/good"     # 기본은 production
         assert headers["apns-topic"] == "com.yeoulmok.app" and headers["apns-push-type"] == "alert"
@@ -181,6 +182,61 @@ def test_sandbox_host():
         apple = _FakeApple({"t": _Resp(200)})
         push.send(["t"], push.payload(1, "금대리 계곡", "caution", NOW), NOW, client=apple)
         assert apple.calls[0][0].startswith("https://api.sandbox.push.apple.com/")
+    _with_env(run)
+
+
+class _TwoApples:
+    """환경별로 다른 답을 주는 가짜 애플. answers[(env, token)]"""
+    def __init__(self, answers):
+        self.answers, self.calls = answers, []
+
+    def post(self, url, headers, json):
+        env = "sandbox" if "sandbox" in url else "production"
+        tok = url.rsplit("/", 1)[1]
+        self.calls.append((env, tok))
+        return self.answers.get((env, tok), _Resp(400, "BadDeviceToken"))
+
+
+def test_unknown_token_tries_production_then_sandbox_and_learns():
+    def run():
+        apple = _TwoApples({("sandbox", "xcode"): _Resp(200), ("production", "tf"): _Resp(200)})
+        res = push.send([("xcode", None), ("tf", None)], push.payload(1, "금대리 계곡", "danger", NOW), NOW, client=apple)
+        assert apple.calls == [("production", "xcode"), ("sandbox", "xcode"), ("production", "tf")]
+        assert res.ok == 2 and res.dead == [] and res.learned == {"xcode": "sandbox", "tf": "production"}
+        assert res.detail[0] == "…xcode production 400 BadDeviceToken → sandbox 200"
+    _with_env(run)
+
+
+def test_known_env_goes_straight_there():
+    def run():
+        apple = _TwoApples({("sandbox", "xcode"): _Resp(200)})
+        res = push.send([("xcode", "sandbox")], push.payload(1, "금대리 계곡", "danger", NOW), NOW, client=apple)
+        assert apple.calls == [("sandbox", "xcode")] and res.learned == {}       # 이미 아는 쪽 → 기억 갱신 없음
+    _with_env(run)
+
+
+def test_bad_on_both_sides_is_dead():
+    def run():
+        apple = _TwoApples({})
+        res = push.send([("old", None)], push.payload(1, "금대리 계곡", "danger", NOW), NOW, client=apple)
+        assert res.ok == 0 and res.dead == ["old"] and len(apple.calls) == 2
+    _with_env(run)
+
+
+def test_unregistered_is_dead_without_retry():
+    def run():
+        apple = _TwoApples({("production", "gone"): _Resp(410, "Unregistered")})
+        res = push.send([("gone", None)], push.payload(1, "금대리 계곡", "danger", NOW), NOW, client=apple)
+        assert res.dead == ["gone"] and apple.calls == [("production", "gone")]
+    _with_env(run)
+
+
+def test_apns_env_sandbox_tries_sandbox_first():
+    def run():
+        os.environ["APNS_ENV"] = "sandbox"
+        apple = _TwoApples({("production", "tf"): _Resp(200)})
+        res = push.send([("tf", None)], push.payload(1, "금대리 계곡", "danger", NOW), NOW, client=apple)
+        assert apple.calls == [("sandbox", "tf"), ("production", "tf")] and res.learned == {"tf": "production"}
     _with_env(run)
 
 
