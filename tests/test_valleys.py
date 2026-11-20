@@ -114,6 +114,29 @@ def test_kma_fetch_range_chunks_and_skips_empty():
     assert s[t("2025-07-19 13:00")] == D("13.0")
 
 
+class FlakyClient(FakeClient):
+    def __init__(self, fail_times):
+        super().__init__()
+        self.fail_times = fail_times
+
+    def get(self, url, params):
+        if self.fail_times:
+            self.fail_times -= 1
+            self.calls.append(("timeout", ""))
+            raise TimeoutError("read timed out")
+        return super().get(url, params)
+
+
+def test_kma_fetch_range_retries_then_skips():
+    os.environ.setdefault("KMA_KEY", "test")
+    c = FlakyClient(fail_times=1)                     # 첫 시도만 늦음 → 다시 받아서 성공
+    s = kma_aws.fetch_range("591", t("2025-07-19 00:00"), t("2025-07-19 06:00"), client=c)
+    assert c.calls[0] == ("timeout", "") and t("2025-07-19 03:00") in s
+    c = FlakyClient(fail_times=2)                     # 두 번 다 늦음 → 그 조각만 비우고 다음 조각 계속
+    s = kma_aws.fetch_range("591", t("2025-07-19 00:00"), t("2025-07-19 18:00"), client=c)
+    assert t("2025-07-19 03:00") not in s and t("2025-07-19 13:00") in s
+
+
 def test_reconstruct_kma_steps_every_10min():
     s = {}
     x = t("2025-07-16 00:00")

@@ -82,10 +82,15 @@ def fetch_range(code: str, start: datetime, end: datetime, client=None) -> dict[
         t = start
         while t < end:
             t2 = min(t + RANGE_CHUNK, end)
-            try:
-                out.update(_get(client, code, t, t2))
-            except ValueError:
-                pass                         # 그 조각만 없음 → 비워 둠
+            for attempt in (1, 2):           # 기상청이 늦게 답하면 한 번 더 (11/20 ReadTimeout)
+                try:
+                    out.update(_get(client, code, t, t2))
+                    break
+                except ValueError:
+                    break                    # 그 조각만 자료 없음 → 비워 둠
+                except Exception as e:  # noqa: BLE001 — 네트워크 오류(타임아웃 등)
+                    if attempt == 2:
+                        print(f"  기상청 AWS {code} {t:%m/%d %H:%M}~{t2:%H:%M} 못 받음 ({type(e).__name__}) → 비워 둠")
             t = t2
     finally:
         if own:
