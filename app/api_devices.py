@@ -63,6 +63,8 @@ def update_device(body: DeviceUpdate, x_device_id: str | None = Header(default=N
     fields = body.model_dump(exclude_unset=True)
     with connect() as conn, conn.cursor() as cur:
         sets = ["last_seen_at = now()"] + [f"{k} = %s" for k in fields]
+        if "apns_token" in fields:
+            sets.append("apns_env = NULL")    # 새 토큰은 sandbox/production 다시 알아냄 (#45)
         cur.execute(
             f"UPDATE devices SET {', '.join(sets)} WHERE id = %s "
             "RETURNING id, notify_on, apns_token IS NOT NULL",

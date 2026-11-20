@@ -67,6 +67,7 @@ CREATE TABLE valley_status (
 CREATE TABLE devices (
   id           TEXT PRIMARY KEY,
   apns_token   TEXT,
+  apns_env     TEXT CHECK (apns_env IN ('production', 'sandbox')),  -- 성공한 APNs 쪽 (모르면 NULL, #45)
   platform     TEXT NOT NULL DEFAULT 'ios',
   notify_on    BOOLEAN NOT NULL DEFAULT TRUE,
   created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -87,6 +88,7 @@ CREATE TABLE IF NOT EXISTS push_log (
   level      TEXT NOT NULL,
   devices    INT NOT NULL,             -- 보낸(보내려 한) 기기 수
   dry_run    BOOLEAN NOT NULL,         -- APNs 키가 없어 실제로는 안 보낸 경우 true
+  detail     TEXT,                     -- 토큰마다 Apple 응답 (#45)
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS push_log_valley_idx ON push_log (valley_id, created_at DESC);
