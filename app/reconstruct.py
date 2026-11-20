@@ -209,7 +209,34 @@ def summary(rows: list[Row], accident: datetime) -> list[str]:
     if ai and (rule is None or ai < rule):
         gain = (rule - ai) if rule else None
         lines.append("  → 예측 AI 덕분에 " + (f"{int(gain.total_seconds() // 60)}분 먼저" if gain else "규칙만으론 못 잡은 주의를") + " 알림")
+    lines += at_accident(rows, accident)
     return lines
+
+
+def _dur(d: timedelta) -> str:
+    m = int(d.total_seconds() // 60)
+    return f"{m // 60}시간 {m % 60}분"
+
+
+def at_accident(rows: list[Row], accident: datetime) -> list[str]:
+    """사고 순간(직전 판정)에 뭐라고 하고 있었나 — '처음 뜬 시각'보다 이게 진짜 차이 (#40)."""
+    before = [r for r in rows if r.at <= accident]
+    if not before:
+        return []
+    caution = J.LEVEL_RANK["caution"]
+    out = [f"사고 순간 ({before[-1].at:%H:%M} 판정)"]
+    for label, key, ai in (("여울목(AI 포함)", lambda r: r.verdict.level, before[-1].verdict.estimated),
+                           ("규칙만", lambda r: r.rule_only, False)):
+        alert = J.LEVEL_RANK.get(key(before[-1]), -1) >= caution
+        since = before[-1].at                    # 지금 상태(주의 이상 / 아래)가 언제부터 이어졌나
+        for r in reversed(before):
+            if (J.LEVEL_RANK.get(key(r), -1) >= caution) != alert:
+                break
+            since = r.at
+        lv = LEVEL_KO.get(key(before[-1]), key(before[-1])) + (" (AI)" if ai else "")
+        state = "주의 이상" if alert else "주의 아래"
+        out.append(f"  {label}: {lv} — {since:%H:%M}부터 {state} 유지 ({_dur(accident - since)}째)")
+    return out
 
 
 def save_csv(rows: list[Row], path: Path) -> None:

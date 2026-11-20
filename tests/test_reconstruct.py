@@ -96,6 +96,21 @@ def test_csv(tmp=Path("/tmp/reconstruct_test.csv")):
     assert len(lines) == 1 + 13 and lines[0].startswith("시각,")
 
 
+def test_at_accident_ai_holds_while_rule_drops():
+    # 00:00~01:00 칸당 3mm(1시간 18mm, 규칙 주의) 뒤 비 그침 → 규칙만은 안전으로, AI(24h 18mm)는 주의 유지
+    start, end = t("2025-07-16 00:00"), t("2025-07-19 06:00")
+    s = {}
+    x = start
+    while x <= end:
+        s[x] = D("3") if t("2025-07-19 00:10") <= x <= t("2025-07-19 01:00") else D("0")
+        x += STEP
+    rows = R.run(s, R.J.KIND_RAIN_10M, t("2025-07-19 00:00"), end, R.DEFAULT_THRESHOLDS, model_24h(thr=15.0))
+    lines = R.at_accident(rows, t("2025-07-19 05:09"))
+    assert lines[0] == "사고 순간 (05:00 판정)", lines
+    assert lines[1].startswith("  여울목(AI 포함): 주의 (AI)") and "주의 이상 유지" in lines[1], lines
+    assert lines[2].startswith("  규칙만: 안전") and "주의 아래 유지" in lines[2], lines
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
