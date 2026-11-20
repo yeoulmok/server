@@ -64,6 +64,14 @@ def test_check_rejects():
     assert X.check("", f) == "빈 응답"
 
 
+def test_check_accepts_falling_level_without_minus():
+    v = decide(Signal(D("26.0"), T), Signal(D("-0.06"), T), TH)      # 위험(강수), 수위는 내려가는 중
+    f = X.build_facts("금대리 계곡", v, TH)
+    assert "-0.06" in f.numbers
+    assert X.check("상류 1시간 강수가 26.0mm로 기준 25.0mm를 넘어 위험 단계예요. 하류 수위는 30분 동안 0.06m 내려갔어요.", f) is None
+    assert X.check("하류 수위가 0.07m 내려갔어요.", f).startswith("사실에 없는 숫자")   # 다른 숫자는 그대로 막음
+
+
 def test_prompt_names_current_level_only():
     system, user = X.prompt(X.build_facts("금대리 계곡", caution_by_rain(), TH))
     assert "'주의'만 쓰고" in system and user.startswith("계곡: 금대리 계곡")

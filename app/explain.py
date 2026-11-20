@@ -141,6 +141,7 @@ def check(text: str, f: Facts, max_chars: int = MAX_CHARS, strict_levels: bool =
     if len(text) > max_chars:
         return f"너무 김 ({len(text)}자)"
     allowed = {_num(n) for n in f.numbers | WINDOW_NUMBERS}
+    allowed |= {abs(n) for n in allowed if n is not None}    # "-0.06m" 사실을 "0.06m 내려갔어요"로 써도 맞음 (#34)
     for n in NUMBER.findall(text):
         if _num(n) not in allowed:
             return f"사실에 없는 숫자 {n}"
