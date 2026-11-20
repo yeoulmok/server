@@ -69,10 +69,23 @@ def test_payload_and_night_sound():
     assert day["valley_id"] == 1 and day["level"] == "caution"
     night = NOW.replace(hour=23)
     assert "sound" not in payload(1, "금대리 계곡", "caution", night)["aps"]
-    assert payload(1, "금대리 계곡", "danger", night)["aps"]["sound"] == "default"
+    assert payload(1, "금대리 계곡", "danger", night)["aps"]["sound"] == "alarm.caf"
     assert "sound" not in payload(1, "금대리 계곡", "caution", NOW.replace(hour=5))["aps"]
 
 
+
+
+def test_alarm_levels_time_sensitive_day_and_night():
+    night = NOW.replace(hour=23)
+    for lvl in ("danger", "evacuate"):
+        for t in (NOW, night):
+            aps = payload(1, "금대리 계곡", lvl, t)["aps"]
+            assert aps["sound"] == "alarm.caf" and aps["interruption-level"] == "time-sensitive"
+    for lvl in ("caution", "safe"):
+        assert payload(1, "금대리 계곡", lvl, NOW)["aps"]["interruption-level"] == "active"
+        assert payload(1, "금대리 계곡", lvl, NOW)["aps"]["sound"] == "default"
+        aps = payload(1, "금대리 계곡", lvl, night)["aps"]
+        assert "sound" not in aps and aps["interruption-level"] == "active"     # 밤엔 무음 그대로
 
 # ---------------------------------------------------------------------------
 # APNs 실제 발송 (가짜 애플 서버로)
