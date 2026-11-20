@@ -50,6 +50,13 @@ def test_features_from_1h():
     assert f["rain_max1h_6h"] == D(5) and f["month"] == 8
 
 
+def test_rain_sum_24h():
+    vals = [D(1)] * 22 + [None] * 2 + [D(5)] * 48
+    assert E.rain_sum(hourly_series(vals), NOW, E.hourly_from_1h) == D(22)
+    gappy = [D(1)] * 20 + [None] * 4 + [D(5)] * 48
+    assert E.rain_sum(hourly_series(gappy), NOW, E.hourly_from_1h) is None
+
+
 def test_features_from_10min_sums_six():
     s = tenmin_series([D("0.5")] * (73 * 6))
     hours, anchor, reason = E.hourly_rain(s, NOW, E.hourly_from_10min)

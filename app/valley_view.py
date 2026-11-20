@@ -110,8 +110,13 @@ def observation(kind: str, station: str, signal, thresholds: list[tuple]) -> dic
         "value": num(signal.value),
         "unit": "mm" if kind == "rain_1h" else "m",
         "threshold": pick_threshold(signal.value, limits),
+        "thresholds": level_limits(limits),     # v0.6: 단계별 기준값 (눈금용)
         "note": signal.reason,          # 값이 null일 때 이유 (결측·지연). 명세 외 추가 필드
     }
+
+
+def level_limits(limits: dict) -> dict:
+    return {lvl: num(limits.get(lvl)) for lvl in ALERT_ORDER}
 
 
 def est_observation(est_rise, observed_at: datetime | None, threshold=AI_CAUTION_M) -> dict:
@@ -123,13 +128,14 @@ def est_observation(est_rise, observed_at: datetime | None, threshold=AI_CAUTION
         "value": num(est_rise),
         "unit": "m",
         "threshold": num(threshold),
+        "thresholds": {"caution": num(threshold), "danger": None, "evacuate": None},
         "note": None,
         "estimated": True,
     }
 
 
 def detail(valley: tuple, status: tuple | None, observations: list[dict], now: datetime,
-           subscribed: bool, sources) -> dict:
+           subscribed: bool, sources, rain_24h=None) -> dict:
     """GET /valleys/{id}. status = (level, rain, rise, observed_at, ai_explanation, ai_fallback
     [, estimated]) 또는 None."""
     vid, name = valley[0], valley[1]
@@ -148,6 +154,7 @@ def detail(valley: tuple, status: tuple | None, observations: list[dict], now: d
         "ai_explanation": ai_explanation,
         "ai_fallback": ai_explanation is None or bool(status and status[5]),
         "observations": observations,
+        "rain_24h_mm": num(rain_24h),       # v0.6
         "actions": actions,
         "disclaimer": DISCLAIMER,
         "source": source_text(sources),
@@ -155,3 +162,42 @@ def detail(valley: tuple, status: tuple | None, observations: list[dict], now: d
         "stale": stale,
         "estimated": estimated,
     }
+
+
+# ---------------------------------------------------------------------------
+# 시간별 기록 (GET /valleys/{id}/history, v0.6) — 그래프용
+# ---------------------------------------------------------------------------
+
+HISTORY_STEP = timedelta(minutes=10)
+
+
+def history_times(now: datetime, hours: int) -> list[datetime]:
+    end = now.replace(minute=now.minute - now.minute % 10, second=0, microsecond=0)
+    n = hours * 6
+    return [end - HISTORY_STEP * (n - i) for i in range(n + 1)]       # 오래된 것부터, 끝 = 지금
+
+
+def _upto(series: dict, t: datetime) -> dict:
+    return {k: v for k, v in series.items() if k <= t}
+
+
+def history_points(times: list[datetime], rain_sources: list, water_series: list[dict],
+                   status_rows: list[tuple]) -> list[dict]:
+    """rain_sources = [(계산 함수, series)] (판정과 같은 함수), water_series = [series],
+    status_rows = [(changed_at, level)] 오래된 것부터. 그 시각까지의 자료만 써서 계산."""
+    from app.judge import merge, water_rise_30m
+
+    points = []
+    for t in times:
+        rain = merge([fn(_upto(sr, t), t) for fn, sr in rain_sources]).value if rain_sources else None
+        rise = merge([water_rise_30m(_upto(ws, t), t) for ws in water_series]).value if water_series else None
+        level_now = next((v for ws in water_series for k, v in ws.items() if k == t and v is not None), None)
+        level = None
+        for changed_at, lvl in status_rows:
+            if changed_at <= t:
+                level = lvl
+            else:
+                break
+        points.append({"at": fmt_time(t), "rain_1h_mm": num(rain), "water_level_m": num(level_now),
+                       "water_rise_30m_m": num(rise), "level": level})
+    return points
