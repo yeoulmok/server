@@ -134,15 +134,19 @@ def hourly_rain(code: str, years: list[int], client) -> dict[datetime, Decimal |
     return out
 
 
-def event_station(v, stations) -> str:
-    """큰비 날을 고를 HRFCO 비 관측소 (기상청 AWS 계곡은 가장 가까운 HRFCO)."""
+def event_stations(v, stations, n: int = 3) -> list[str]:
+    """큰비 날을 고를 HRFCO 비 관측소 후보 (기상청 AWS 계곡은 가까운 HRFCO 순서로 n개 — 자료 없는 곳은 건너뜀)."""
     if v.rain_source == "hrfco":
-        return v.rain_code
+        return [v.rain_code]
     from app import candidates as C
 
-    p = C.Place(v.name, "", float(v.lat), float(v.lon), "")
-    near = C.nearest(p, stations, ("rainfall",))
-    return near[0].code if near else ""
+    rain = [s for s in stations if s.kind == "rainfall"]
+    rain.sort(key=lambda s: C.km(float(v.lat), float(v.lon), s.lat, s.lon))
+    return [s.code for s in rain[:n]]
+
+
+def has_data(hourly: dict) -> bool:
+    return any(x is not None for x in hourly.values())
 
 
 def run_day(v, day: date, thresholds, model, client) -> tuple[list[R.Row], dict | None]:
@@ -215,15 +219,20 @@ def main(argv=None) -> None:
         stations = C.all_stations(c) if any(v.rain_source == "kma" for v in valleys) else []
         hourly_cache: dict[str, dict] = {}
         for v in valleys:
-            code = event_station(v, stations)
+            codes = event_stations(v, stations)
+            code = ""
+            for cand in codes:
+                if cand not in hourly_cache:
+                    hourly_cache[cand] = hourly_rain(cand, years, c)
+                if has_data(hourly_cache[cand]):
+                    code = cand
+                    break
             kind = "A 비+수위" if v.water_code else "B 비만"
             print(f"\n■ {v.name} [{kind}]  비 {v.rain_source}:{v.rain_code}" + (f"  수위 {v.water_code}" if v.water_code else "")
                   + (f"  (큰비 날은 HRFCO {code}로 고름)" if code != v.rain_code else ""))
             if not code:
-                print("  큰비 날을 고를 HRFCO 관측소 없음 → 건너뜀")
+                print(f"  큰비 날을 고를 HRFCO 관측소 자료 없음 ({', '.join(codes) or '-'}) → 건너뜀")
                 continue
-            if code not in hourly_cache:
-                hourly_cache[code] = hourly_rain(code, years, c)
             events = pick_events(hourly_cache[code], a.top)
             if not events:
                 print(f"  {', '.join(map(str, years))}년 6~9월에 1시간 {MIN_EVENT_MM}mm 넘는 날 없음")

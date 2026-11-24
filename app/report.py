@@ -164,9 +164,11 @@ def table(stats: list[ValleyStats]) -> str:
     return head + "\n".join(rows)
 
 
-def check_draft(text: str, f: explain.Facts) -> str | None:
+def check_draft(text: str, f: explain.Facts, stop: str | None = None) -> str | None:
     if not text:
         return "빈 응답"
+    if stop == "max_tokens":
+        return "중간에 잘림"
     if len(text) > MAX_CHARS:
         return f"너무 김 ({len(text)}자)"
     allowed = {explain._num(x) for x in f.numbers | explain.WINDOW_NUMBERS}
@@ -184,11 +186,11 @@ def ai_draft(f: explain.Facts, client=None) -> tuple[str | None, str | None]:
     reason = None
     for _ in range(explain.ATTEMPTS):
         try:
-            text = explain.call_claude(SYSTEM.format(max=MAX_CHARS), "[사실]\n" + "\n".join(f.lines), client,
-                                       max_tokens=1500)
+            text, stop = explain.call_claude(SYSTEM.format(max=MAX_CHARS), "[사실]\n" + "\n".join(f.lines), client,
+                                             max_tokens=4000, with_stop=True)
         except Exception as e:  # noqa: BLE001
             return None, f"API 실패: {e}"
-        reason = check_draft(text, f)
+        reason = check_draft(text, f, stop)
         if reason is None:
             return text, None
         log.info("운영보고서 초안 검사 실패 (%s)", reason)
@@ -227,7 +229,11 @@ def collect(conn, start: datetime, end: datetime) -> list[ValleyStats]:
                     st.rain_max_1h = m if st.rain_max_1h is None or (m is not None and m > st.rain_max_1h) else st.rain_max_1h
                 elif role == "downstream_water":
                     st.rise_max_30m = max_rise_30m(series)
-                st.gaps[sname] = gap_pct(series, start, end)
+                # 목록에 넣기 전 기간은 빠짐이 아님 → 그 관측소 첫 자료부터 셈
+                cur.execute("SELECT min(observed_at) FROM observations WHERE station_id = %s", (sid,))
+                first = cur.fetchone()[0]
+                if first is not None and first < end:
+                    st.gaps[sname] = gap_pct(series, max(start, first), end)
             out.append(st)
     return out
 
