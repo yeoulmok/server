@@ -150,6 +150,21 @@ def test_parse_tour_area_and_dedupe():
     assert [p.name for p in C.dedupe(ps, have)] == ["다른계곡"]
 
 
+def test_classify_b_when_other_river_or_far():                      # #69
+    V = (37.278, 128.020)
+    st = [C.Station("hrfco", "R", "비", "rainfall", 37.279, 128.021),
+          C.Station("hrfco", "W", "본류교", "waterlevel", 37.300, 128.030)]
+    basin, river = _geo({(37.278, 128.02): ("1", "a"), (37.279, 128.021): ("1", "a"), (37.3, 128.03): ("1", "a")},
+                        {(37.278, 128.02): ("소하천", "마포천"), (37.3, 128.03): ("지방하천", "옥동천")})
+    vd = C.classify(*V, st, basin, river, lambda c: 18)
+    assert vd.cls == "B" and any("다른 물줄기" in n for n in vd.notes)
+    st[1] = C.Station("hrfco", "W", "먼교", "waterlevel", 37.370, 128.030)          # 같은 하천, 10km
+    basin, river = _geo({(37.278, 128.02): ("1", "a"), (37.279, 128.021): ("1", "a"), (37.37, 128.03): ("1", "a")},
+                        {(37.278, 128.02): ("소하천", "계천"), (37.37, 128.03): ("지방하천", "계천")})
+    vd = C.classify(*V, st, basin, river, lambda c: 18)
+    assert vd.cls == "B" and any("멀어서" in n for n in vd.notes)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
