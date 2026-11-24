@@ -129,6 +129,27 @@ def test_link_changes():
     assert ch == [("downstream_water", None, ("hrfco", "1006667", "waterlevel", "섬강교"))]
 
 
+# --- 넓게 훑기 (#63) ------------------------------------------------------------
+
+def test_looks_like_valley():
+    assert C.looks_like_valley("법흥계곡") and C.looks_like_valley("간현유원지")
+    assert C.looks_like_valley("어딘가골", "A01010900")                       # 이름에 계곡 없어도 분류로
+    assert not C.looks_like_valley("병지방계곡 오토캠핑장") and not C.looks_like_valley("사단법인용연계곡보존회")
+    assert not C.looks_like_valley("치악산 전망대")
+
+
+def test_parse_tour_area_and_dedupe():
+    rows, total = C.parse_tour_area({"response": {"body": {"totalCount": 2, "items": {"item": [
+        {"title": "간현유원지", "addr1": "강원특별자치도 원주시 지정면", "mapx": "127.81", "mapy": "37.36", "contentid": "7", "cat3": "A01011100"},
+        {"title": "무명골", "addr1": "강원특별자치도 원주시", "mapx": "128.0", "mapy": "37.3", "contentid": "8", "cat3": "A01010900"}]}}}})
+    assert total == 2 and [c for _, c in rows] == ["A01011100", "A01010900"]
+    have = [("황둔계곡", 37.251111, 128.1425)]
+    ps = [C.Place("황둔 계곡(원주)", "", 37.30, 128.30, "x"),                   # 이름 같음 → 뺌
+          C.Place("새계곡", "", 37.2515, 128.1430, "x"),                         # 1km 안 → 뺌
+          C.Place("다른계곡", "", 37.40, 128.40, "x"), C.Place("다른 계곡", "", 37.401, 128.401, "x")]
+    assert [p.name for p in C.dedupe(ps, have)] == ["다른계곡"]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

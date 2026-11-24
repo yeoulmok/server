@@ -4,6 +4,7 @@
   python -m app.candidates --find 용수골계곡      # 관광공사에 없는 곳: 브이월드 검색 API로 이름 → 좌표
   python -m app.candidates --addr "원주시 판부면 서곡리 산 166"   # 브이월드 지오코더: 주소 → 좌표
   python -m app.candidates --classify          # db/valleys.csv 전부 A/B/C 분류 (표준유역·하천·수위 자료 확인)
+  python -m app.candidates --scan 원주 횡성 영월 강릉   # 더 넓게: 관광공사 관광지 전체 훑기 + 브이월드 지명 '계곡' (#63)
 
 분류 (#52)
   A 비+수위: 같은 표준유역 안에 수위계가 있고 최근 자료가 들어옴 → 규칙만으로 판정 (AI는 수위 결측 때만)
@@ -32,6 +33,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 TOUR_URL = "https://apis.data.go.kr/B551011/KorService2/searchKeyword2"
+TOUR_AREA_URL = "https://apis.data.go.kr/B551011/KorService2/areaBasedList2"
+VALLEY_CAT3 = "A01010900"            # 관광공사 옛 분류: 자연 > 자연관광지 > 계곡
+REGION_BBOX = {                      # 브이월드 검색 범위 (대략, 주소로 한 번 더 거름)
+    "원주": (127.72, 37.17, 128.22, 37.52), "횡성": (127.78, 37.33, 128.38, 37.72),
+    "영월": (128.08, 37.03, 128.82, 37.42), "강릉": (128.58, 37.48, 129.12, 37.98),
+}
+SAME_KM = 1.0                        # 이 거리 안이면 같은 곳으로 봄
 VWORLD_SEARCH = "https://api.vworld.kr/req/search"
 VWORLD_GEOCODE = "https://api.vworld.kr/req/address"
 HRFCO = "https://api.hrfco.go.kr"
@@ -300,6 +308,110 @@ def save(rows: list[dict], path: Path = OUT) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 넓게 훑기 (#63)
+# ---------------------------------------------------------------------------
+
+WATER_WORDS = ("계곡", "유원지", "골짜기", "폭포", "소(沼)")
+NOT_WATER = ("캠핑", "펜션", "야영", "식당", "가든", "민박", "카페", "모텔", "리조트", "글램핑", "농원", "휴게소", "주차장",
+             "보존회", "협회", "마을회관", "교회", "산장")
+
+
+def looks_like_valley(title: str, cat3: str = "") -> bool:
+    if any(w in title for w in NOT_WATER):
+        return False
+    return cat3 == VALLEY_CAT3 or any(w in title for w in WATER_WORDS)
+
+
+def parse_tour_area(payload: dict) -> tuple[list[tuple[Place, str]], int]:
+    """관광지 전체 목록 → [(Place, cat3)]"""
+    body = (payload.get("response") or {}).get("body") or {}
+    items = (body.get("items") or {})
+    items = items.get("item", []) if isinstance(items, dict) else []
+    if isinstance(items, dict):
+        items = [items]
+    out = []
+    for it in items:
+        try:
+            lat, lon = float(it.get("mapy")), float(it.get("mapx"))
+        except (TypeError, ValueError):
+            continue
+        out.append((Place(it.get("title", "").strip(), (it.get("addr1") or "").strip(), lat, lon,
+                          f"tour:{it.get('contentid')}"), it.get("cat3") or ""))
+    return out, int(body.get("totalCount") or 0)
+
+
+def dedupe(places: list[Place], existing: list[tuple[str, float, float]]) -> list[Place]:
+    """이름이 같거나 1km 안이면 하나로 (이미 목록에 있는 계곡도 뺌)."""
+    keep: list[Place] = []
+    norm = lambda n: re.sub(r"[\s()·]|원주|횡성|영월|강릉|일원", "", n)   # noqa: E731
+    for p in places:
+        if any(norm(p.name) == norm(n) or km(p.lat, p.lon, la, lo) < SAME_KM for n, la, lo in existing):
+            continue
+        if any(norm(p.name) == norm(q.name) or km(p.lat, p.lon, q.lat, q.lon) < SAME_KM for q in keep):
+            continue
+        keep.append(p)
+    return keep
+
+
+def tour_scan(regions: list[str], client) -> list[Place]:
+    out, page, total = [], 1, None
+    while True:
+        r = client.get(TOUR_AREA_URL, params={
+            "serviceKey": os.environ["TOUR_KEY"], "MobileOS": "ETC", "MobileApp": "yeoulmok", "_type": "json",
+            "lDongRegnCd": GANGWON, "contentTypeId": 12, "numOfRows": 500, "pageNo": page})
+        r.raise_for_status()
+        rows, total = parse_tour_area(r.json())
+        out += [(p, c) for p, c in rows if any(reg in p.addr for reg in regions)]
+        if page * 500 >= total or not rows:
+            break
+        page += 1
+    print(f"  관광공사 강원 관광지 {total}건 중 {', '.join(regions)} {len(out)}건 훑음")
+    return [p for p, c in out if looks_like_valley(p.name, c)]
+
+
+def vworld_scan(regions: list[str], client) -> list[Place]:
+    out = []
+    for reg in regions:
+        bbox = REGION_BBOX.get(reg)
+        if not bbox:
+            continue
+        for word in ("계곡", "유원지"):
+            for page in (1, 2, 3):
+                r = client.get(VWORLD_SEARCH, params={"service": "search", "request": "search", "version": "2.0",
+                                                      "type": "place", "query": f"{reg} {word}", "size": 100, "page": page,
+                                                      "bbox": ",".join(map(str, bbox)), "format": "json",
+                                                      "key": os.environ["VWORLD_KEY"]})
+                r.raise_for_status()
+                got = parse_vworld_search(r.json())
+                out += [p for p in got if reg in p.addr and looks_like_valley(p.name)]
+                if len(got) < 100:
+                    break
+    return out
+
+
+def scan(regions: list[str]) -> None:
+    from app import valleys as V
+
+    have = [(v.name, float(v.lat), float(v.lon)) for v in V.load_csv()]
+    with _client() as c:
+        a = tour_scan(regions, c)
+        try:
+            b = vworld_scan(regions, c)
+        except Exception as e:  # noqa: BLE001
+            print(f"  브이월드 검색 실패 ({type(e).__name__}) → 관광공사만")
+            b = []
+        print(f"  관광공사에서 {len(a)}곳, 브이월드 지명에서 {len(b)}곳 (겹침·이미 있는 곳 빼기 전)")
+        new = dedupe(a + b, have)
+        print(f"새 후보 {len(new)}곳 (지금 목록 {len(have)}곳과 1km 안·같은 이름은 뺌)")
+        if not new:
+            return
+        rows = rows_for(new, all_stations(c))
+    show(rows)
+    save(rows, OUT.parent / "candidates_scan.csv")
+    print(f"\n표: {OUT.parent / 'candidates_scan.csv'}  (마지막 열이 db/valleys.csv 줄)")
+
+
+# ---------------------------------------------------------------------------
 # 분류 (#52): 표준유역 · 하천 · 수위 자료
 # ---------------------------------------------------------------------------
 
@@ -465,6 +577,9 @@ def main(argv=None) -> None:
         return
     if argv[0] == "--classify":
         classify_all()
+        return
+    if argv[0] == "--scan":
+        scan(argv[1:] or ["원주", "횡성", "영월", "강릉"])
         return
     with _client() as c:
         if argv[0] == "--find":
