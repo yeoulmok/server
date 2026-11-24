@@ -111,6 +111,25 @@ def test_at_accident_ai_holds_while_rule_drops():
     assert lines[2].startswith("  규칙만: 안전") and "주의 아래 유지" in lines[2], lines
 
 
+def test_with_water_uses_real_rise_and_compares_ai():
+    # 비는 01시까지만 (규칙만이면 02시부터 안전), 수위는 02:00~02:30에 0.15m 오름 → 비+수위는 주의
+    rain = series_10m(t("2025-07-16 00:00"), t("2025-07-19 04:00"), t("2025-07-19 04:10"), 0)
+    for k in list(rain):
+        if t("2025-07-19 00:10") <= k <= t("2025-07-19 01:00"):
+            rain[k] = D("1")
+    water = {}
+    x = t("2025-07-19 00:00")
+    while x <= t("2025-07-19 04:00"):
+        water[x] = D("1.00") + (D("0.05") * min(max(int((x - t("2025-07-19 02:00")) / STEP), 0), 3))
+        x += STEP
+    rows = R.run(rain, R.J.KIND_RAIN_10M, t("2025-07-19 01:00"), t("2025-07-19 04:00"), R.DEFAULT_THRESHOLDS, None, water)
+    r230 = next(r for r in rows if r.at == t("2025-07-19 02:30"))
+    assert r230.rise_30m == D("0.15") and r230.with_water == "caution" and r230.rule_only == "safe"
+    lines = R.water_summary(rows, t("2025-07-19 03:00"))
+    assert lines[0].startswith("실제 수위 (01:00 1.00m") and "+0.15m" in lines[1]
+    assert any("주의 첫 발령 02:20" in x for x in lines)      # 30분 상승 0.10m = 주의 기준
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
