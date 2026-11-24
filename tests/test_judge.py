@@ -125,6 +125,26 @@ def test_parse_aws_rn60_every_10min():
     assert rows[1][1] is None                        # -99.9 → 결측
 
 
+def test_water_hold_keeps_caution_after_rain_stops():
+    from datetime import timedelta as _td
+    from decimal import Decimal as _D
+    from app import judge as _J
+    from zoneinfo import ZoneInfo
+    now = _J.datetime(2025, 7, 19, 14, 0, tzinfo=ZoneInfo("Asia/Seoul"))     # 서곡리 봉미교 사고일 값
+    w = {now - _td(hours=12): _D("2.74"), now - _td(hours=5): _D("3.21"), now - _td(minutes=30): _D("3.06"), now: _D("3.06")}
+    hold = _J.water_hold(w, now)
+    assert hold.value == _D("0.32")
+    th = [_J.Threshold("caution", _D("15"), _D("0.10")), _J.Threshold("danger", _D("25"), _D("0.20"))]
+    rain0 = _J.Signal(_D("0"), now)
+    rise = _J.water_rise_30m(w, now)
+    assert rise.value == _D("0")
+    v = _J.decide(rain0, rise, th, None, True, hold)
+    assert v.level == "caution" and v.estimated is False and v.hold.value == _D("0.32")
+    low = _J.water_hold({now - _td(hours=3): _D("3.00"), now: _D("3.10")}, now)
+    assert _J.decide(rain0, rise, th, None, True, low).level == "safe"             # 0.10 < 0.30
+    assert _J.decide(rain0, rise, th, None, False, hold).hold is None               # 수위 없는 계곡엔 안 씀
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

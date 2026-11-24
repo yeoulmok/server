@@ -92,6 +92,11 @@ def build_facts(name: str, verdict, thresholds) -> Facts:
             "기준을 넘음" if lim is not None and rise.value >= lim else "기준 아래")
     elif est is None:
         f.lines.append(f"하류 30분 수위 상승: 자료 없음 ({rise.reason})")
+    hold = getattr(verdict, "hold", None)
+    if hold is not None and hold.value is not None:
+        from app.judge import HOLD_M
+        add("하류 수위가 최근 24시간 가장 낮을 때보다 높은 정도", hold.value, HOLD_M, "m", 2,
+            "주의 기준을 넘음 (비가 그쳐도 물이 불어 있음)" if hold.value >= HOLD_M else "기준 아래")
     if est is not None:
         f.lines.append("하류 수위: 관측소가 없거나 자료가 끊겨서 AI가 강수로 추정함")
         if est.rain_24h is not None:
