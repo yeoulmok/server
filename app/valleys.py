@@ -1,9 +1,10 @@
 """계곡 목록 파일(db/valleys.csv) → DB (#42). 계곡 추가 = 목록에 한 줄 + 명령 한 번.
 
   python -m app.valleys            # 목록과 DB 상태 보기 (아무것도 안 바꿈)
-  python -m app.valleys apply      # DB에 없는 계곡만 추가 + 새 강수 관측소 지난 73시간 자료 받기
+  python -m app.valleys apply      # DB에 없는 계곡 추가 + 있는 계곡은 관측소 연결을 목록대로 맞춤 + 새 관측소 지난 73시간
 
-- 이미 DB에 있는 계곡(이름 기준)은 건드리지 않음. 여러 번 실행해도 같은 결과
+- 이미 DB에 있는 계곡(이름 기준)은 관측소 연결(상류 강수·하류 수위)만 목록과 같게 맞춤 (#52 분류 반영용).
+  계곡 이름·좌표·기준값은 그대로. 여러 번 실행해도 같은 결과
 - 하류 수위가 없는 계곡은 강수만 연결 → 판정 엔진이 AI 확인 단계를 씀 (서곡리 방식)
 - 기준값은 금대리 값을 복사 (1시간 강수 15/25/40mm, 임시값 #20)
 - status: 운영(검증함) / 시범(재현 전). 보고서에 "검증 N곳 / 시범 M곳"으로 쓰려고 적어 둠
@@ -102,6 +103,44 @@ def add_valley(cur, v: Valley) -> int:
     return vid
 
 
+def wanted_links(v: Valley) -> dict[str, tuple[str, str, str, str]]:
+    """역할 → (source, code, kind, name) — 목록이 원하는 연결."""
+    out = {"upstream_rain": (v.rain_source, v.rain_code, v.rain_kind, v.rain_name)}
+    if v.water_code:
+        out["downstream_water"] = ("hrfco", v.water_code, "waterlevel", v.water_name or v.water_code)
+    return out
+
+
+def current_links(cur, vid: int) -> dict[str, tuple[str, str, str]]:
+    cur.execute("SELECT vs.role, s.source, s.code, s.kind FROM valley_stations vs JOIN stations s ON s.id = vs.station_id "
+                "WHERE vs.valley_id = %s AND vs.role IN ('upstream_rain', 'downstream_water')", (vid,))
+    return {r[0]: (r[1], r[2], r[3]) for r in cur.fetchall()}
+
+
+def link_changes(want: dict, have: dict) -> list[tuple[str, tuple | None, tuple | None]]:
+    """(역할, 지금, 바꿀 것) — 순수 비교."""
+    out = []
+    for role in ("upstream_rain", "downstream_water"):
+        w = want.get(role)
+        h = have.get(role)
+        if (w[:3] if w else None) != h:
+            out.append((role, h, w))
+    return out
+
+
+def sync_links(cur, vid: int, v: Valley) -> list[str]:
+    """있는 계곡의 연결을 목록대로. 바뀐 내용을 사람이 읽을 줄로 돌려줌. 새로 연결한 관측소 [(source,code,kind)]도."""
+    msgs = []
+    for role, h, w in link_changes(wanted_links(v), current_links(cur, vid)):
+        cur.execute("DELETE FROM valley_stations WHERE valley_id = %s AND role = %s", (vid, role))
+        if w:
+            sid = _station_id(cur, w[0], w[1], w[3], w[2])
+            cur.execute("INSERT INTO valley_stations (valley_id, station_id, role) VALUES (%s, %s, %s)", (vid, sid, role))
+        ko = "비" if role == "upstream_rain" else "수위"
+        msgs.append(f"{ko}: {':'.join(h[:2]) if h else '없음'} → {':'.join(w[:2]) if w else '없음'}")
+    return msgs
+
+
 def backfill(conn, v: Valley) -> int:
     """새 강수 관측소의 지난 73시간. HRFCO는 collector 것, 기상청 AWS는 kma_aws.fetch_range."""
     from app import collector
@@ -149,6 +188,30 @@ def main(argv=None) -> None:
         if not argv or argv[0] != "apply":
             print(f"\n추가할 계곡 {len(todo)}곳. 넣으려면: python -m app.valleys apply")
             return
+        changed = 0
+        for v in valleys:
+            if v.name not in existing:
+                continue
+            with conn.transaction(), conn.cursor() as cur:
+                cur.execute("SELECT id FROM valleys WHERE name = %s", (v.name,))
+                vid = cur.fetchone()[0]
+                msgs = sync_links(cur, vid, v)
+            if msgs:
+                changed += 1
+                print(f"연결 바꿈: {v.name} — {'; '.join(msgs)}")
+                if v.rain_code and any(m.startswith("비:") for m in msgs):
+                    try:
+                        print(f"  새 비 관측소 지난 {BACKFILL_HOURS}시간 {backfill(conn, v)}칸")
+                    except Exception as e:  # noqa: BLE001
+                        print(f"  지난 자료 못 받음 ({type(e).__name__}) → 앞으로 수집분으로")
+                if v.water_code and any(m.startswith("수위:") for m in msgs):
+                    try:
+                        from app import collector
+                        print(f"  새 수위계 지난 {BACKFILL_HOURS}시간 {collector.backfill(v.water_code, BACKFILL_HOURS)}칸")
+                    except Exception as e:  # noqa: BLE001
+                        print(f"  수위 지난 자료 못 받음 ({type(e).__name__}) → 앞으로 수집분으로")
+        if changed:
+            print(f"연결을 바꾼 계곡 {changed}곳")
         for v in todo:
             with conn.transaction(), conn.cursor() as cur:
                 vid = add_valley(cur, v)
@@ -158,8 +221,8 @@ def main(argv=None) -> None:
                 print(f"  지난 {BACKFILL_HOURS}시간 자료 {n}칸 저장")
             except Exception as e:  # noqa: BLE001 — 계곡은 들어감. 자료는 collector가 앞으로 채움
                 print(f"  지난 자료 받기 실패 ({type(e).__name__}: {e}) → 앞으로 수집되는 자료로 판정")
-        if not todo:
-            print("\n새로 넣을 계곡 없음")
+        if not todo and not changed:
+            print("\n새로 넣을 계곡도, 바꿀 연결도 없음")
         else:
             print("\njudge가 다음 회차(5분 안)에 새 계곡을 판정함. 확인: docker logs judge --tail 30")
 
