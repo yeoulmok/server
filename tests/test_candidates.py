@@ -100,6 +100,16 @@ def test_classify_c_when_rain_far_and_other_basin():
     assert C.classify(*V, st, basin, river, lambda c: 0).cls == "C"
 
 
+def test_classify_skips_dead_rain_station():
+    V = (37.278, 128.020)
+    st = [C.Station("hrfco", "DEAD", "신촌리", "rainfall", 37.297, 127.971),
+          C.Station("kma", "582", "신림", "rainfall_1h", 37.270, 128.090)]
+    basin, river = _geo({(37.278, 128.02): ("100606", "원주천"), (37.297, 127.971): ("100606", "원주천"),
+                         (37.27, 128.09): ("100607", "다른")})
+    vd = C.classify(*V, st, basin, river, lambda c: 0, lambda c: 0 if c == "DEAD" else 18)
+    assert vd.rain[0].code == "582" and any("신촌리 최근 자료 없음" in n for n in vd.notes)
+
+
 def test_vworld_feature_parser():
     ok = {"response": {"status": "OK", "result": {"featureCollection": {"features": [
         {"properties": {"sbsncd": "100606", "sbsnnm": "원주천", "cat_nam": "표준유역"}}]}}}}
@@ -110,7 +120,7 @@ def test_vworld_feature_parser():
 def test_link_changes():
     from app import valleys as VV
     v = next(x for x in VV.load_csv() if x.name == "금대리 계곡")
-    same = {"upstream_rain": ("hrfco", "10064075", "rainfall"), "downstream_water": ("hrfco", "1006664", "waterlevel")}
+    same = {"upstream_rain": ("kma", "582", "rainfall_1h"), "downstream_water": ("hrfco", "1006664", "waterlevel")}
     assert VV.link_changes(VV.wanted_links(v), same) == []
     g = next(x for x in VV.load_csv() if x.name == "구룡사계곡")
     import dataclasses
