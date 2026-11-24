@@ -110,7 +110,7 @@ def test_vworld_feature_parser():
 def test_link_changes():
     from app import valleys as VV
     v = next(x for x in VV.load_csv() if x.name == "금대리 계곡")
-    same = {"upstream_rain": ("kma", "582", "rainfall_1h"), "downstream_water": ("hrfco", "1006664", "waterlevel")}
+    same = {"upstream_rain": ("hrfco", "10064075", "rainfall"), "downstream_water": ("hrfco", "1006664", "waterlevel")}
     assert VV.link_changes(VV.wanted_links(v), same) == []
     g = next(x for x in VV.load_csv() if x.name == "구룡사계곡")
     import dataclasses
