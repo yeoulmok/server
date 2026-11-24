@@ -162,9 +162,11 @@ def with_water_at(series: dict, kind: str, water: dict, t: datetime, thresholds,
         rain, per_hour = J.rain_1h(past, t), est_mod.hourly_from_10min
     else:
         rain, per_hour = J.rain_1h_direct(past, t), est_mod.hourly_from_1h
-    rise = J.water_rise_30m({k: v for k, v in water.items() if k <= t}, t)
+    wpast = {k: v for k, v in water.items() if k <= t}
+    rise = J.water_rise_30m(wpast, t)
+    hold = J.water_hold(wpast, t)                        # #59 평소 대비 규칙 (서버와 같음)
     est = est_mod.estimate(past, t, per_hour, model) if rise.value is None else None
-    return J.decide(rain, rise, thresholds, est, has_water=True).level, rise
+    return J.decide(rain, rise, thresholds, est, has_water=True, hold=hold).level, rise
 
 
 def run(series: dict, kind: str, start: datetime, end: datetime, thresholds, model, water: dict | None = None) -> list[Row]:

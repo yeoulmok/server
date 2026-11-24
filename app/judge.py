@@ -50,6 +50,11 @@ RAIN_STEPS = 6                          # 1시간 = 10분 × 6
 RISE_WINDOW = timedelta(minutes=30)
 STALE_AFTER = timedelta(minutes=30)     # 명세: 관측 30분 초과면 판정 불가
 LOOKBACK = timedelta(hours=3)           # DB에서 읽어올 범위
+HOLD_LOOKBACK = timedelta(hours=25)     # 수위 '평소 대비' 규칙용 (직전 24시간 최저)
+HOLD_WINDOW = timedelta(hours=24)
+HOLD_M = Decimal("0.30")                # #59: 수위가 직전 24시간 최저보다 이만큼 높으면 '주의' 유지
+#   근거: 2025.7.19 서곡리(봉미교) 사고 시각 +0.32m인데 30분 상승은 0 → 30분 규칙만으론 '안전'(#56).
+#   임시값 — 일괄 재현(#58)·전문가 조언(#24)으로 다시 정하기
 RAIN_LOOKBACK = timedelta(hours=73)     # AI 특징(72시간 강수)용 강수 범위
 
 NORMAL = "safe"                         # 명세 v0.2 상태 이름
@@ -86,6 +91,7 @@ class Verdict:
     rise: Signal
     est: Estimate | None = None     # AI 확인 단계를 봤을 때만 (수위 없음·수위 결측)
     estimated: bool = False         # 최종 단계가 AI 추정 때문에 정해졌으면 True
+    hold: Signal | None = None      # 수위 - 직전 24시간 최저 (수위 있는 계곡만, #59)
     thresholds: tuple = ()          # 이 계곡 기준값 (AI 설명에 씀)
 
     @property
@@ -146,6 +152,19 @@ def water_rise_30m(series: Series, now: datetime) -> Signal:
     return Signal(current - before, latest)
 
 
+def water_hold(series: Series, now: datetime) -> Signal:
+    """값이 있는 최신 수위 - 그 직전 24시간 최저. (#59 '비 그친 뒤에도 물이 불어 있음')"""
+    if not series:
+        return Signal(None, None, "수위 자료 없음")
+    latest = _latest_valued(series)
+    if latest is None:
+        return Signal(None, max(series), "수위 결측")
+    if now - latest > STALE_AFTER:
+        return Signal(None, latest, "수위 자료 지연")
+    window = [v for t, v in series.items() if v is not None and latest - HOLD_WINDOW <= t <= latest]
+    return Signal(series[latest] - min(window), latest)
+
+
 def merge(signals: list[Signal]) -> Signal:
     """같은 역할의 관측소가 여럿이면 쓸 수 있는 값 중 가장 위험한(큰) 값."""
     usable = [s for s in signals if s.value is not None]
@@ -173,9 +192,12 @@ def _rank_max(levels: list[str]) -> str:
 
 
 def decide(rain: Signal, rise: Signal, thresholds: list[Threshold],
-           est: Estimate | None = None, has_water: bool = True) -> Verdict:
-    """est: AI 추정 (없으면 None). has_water: 하류 수위관측소가 연결된 계곡인지."""
+           est: Estimate | None = None, has_water: bool = True, hold: Signal | None = None) -> Verdict:
+    """est: AI 추정 (없으면 None). has_water: 하류 수위관측소가 연결된 계곡인지.
+    hold: 수위 - 직전 24시간 최저 (#59). HOLD_M 이상이면 최소 '주의' (그 이상은 올리지 않음)."""
     levels: list[str] = []
+    if has_water and hold is not None and hold.value is not None and hold.value >= HOLD_M:
+        levels.append("caution")
     missing = False
     signals = [(rain, "rain_1h_mm")] + ([(rise, "water_rise_m")] if has_water else [])
     for sig, attr in signals:
@@ -208,7 +230,7 @@ def decide(rain: Signal, rise: Signal, thresholds: list[Threshold],
         level = UNKNOWN        # 경보는 아닌데 자료가 비었으면 '판정 불가'
     else:
         level = NORMAL
-    return Verdict(level, rain, rise, est, estimated)
+    return Verdict(level, rain, rise, est, estimated, hold=hold if has_water else None)
 
 
 # ---------------------------------------------------------------------------
@@ -255,7 +277,6 @@ def evaluate_valley(conn, valley_id: int, now: datetime) -> Verdict:
         )
         links = cur.fetchall()
 
-        since = now - LOOKBACK
         rain_since = now - RAIN_LOOKBACK
         rain_calc = {KIND_RAIN_10M: rain_1h, KIND_RAIN_1H: rain_1h_direct}
         per_hour = {KIND_RAIN_10M: est_mod.hourly_from_10min, KIND_RAIN_1H: est_mod.hourly_from_1h}
@@ -263,14 +284,16 @@ def evaluate_valley(conn, valley_id: int, now: datetime) -> Verdict:
                        if role == ROLE_RAIN and kind in rain_calc]
         rain = merge([rain_calc[kind](s, now) for kind, s in rain_series])
         water_sids = [sid for role, sid, kind in links if role == ROLE_WATER]
-        rise = merge([water_rise_30m(_series(cur, sid, since), now) for sid in water_sids])
+        water_series = [_series(cur, sid, now - HOLD_LOOKBACK) for sid in water_sids]
+        rise = merge([water_rise_30m(ws, now) for ws in water_series])
+        hold = merge([water_hold(ws, now) for ws in water_series]) if water_series else None
 
     has_water = bool(water_sids)
     est = None
     if not has_water or rise.value is None:
         model = est_mod.load_model()
         est = est_mod.merge([est_mod.estimate(s, now, per_hour[kind], model) for kind, s in rain_series])
-    return replace(decide(rain, rise, thresholds, est, has_water), thresholds=tuple(thresholds))
+    return replace(decide(rain, rise, thresholds, est, has_water, hold), thresholds=tuple(thresholds))
 
 
 def save_status(conn, valley_id: int, v: Verdict) -> bool:
