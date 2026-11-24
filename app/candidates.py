@@ -39,6 +39,7 @@ REGION_BBOX = {                      # 브이월드 검색 범위 (대략, 주�
     "원주": (127.72, 37.17, 128.22, 37.52), "횡성": (127.78, 37.33, 128.38, 37.72),
     "영월": (128.08, 37.03, 128.82, 37.42), "강릉": (128.58, 37.48, 129.12, 37.98),
 }
+WATER_KM = 8.0                       # A 수위계 최대 거리 (#69)
 SAME_KM = 1.0                        # 이 거리 안이면 같은 곳으로 봄
 VWORLD_SEARCH = "https://api.vworld.kr/req/search"
 VWORLD_GEOCODE = "https://api.vworld.kr/req/address"
@@ -502,9 +503,18 @@ def classify(lat, lon, stations, basin_of, river_of, alive_of, rain_alive_of=lam
     if rain is None or (not rain[2] and rain[1] > NEAR_KM):
         cls = "C"
     elif water:
-        cls = "A"
-        if vr and water[2] and vr[1] != water[2]:
-            notes.append(f"계곡 옆 하천 '{vr[1]}' ≠ 수위계 하천 '{water[2]}' (같은 유역 안 다른 지류일 수 있음)")
+        # A는 수위계가 '같은 물줄기'일 때만: 하천 이름이 같고 WATER_KM 안 (#69)
+        same_river = bool(water[2]) and (vr[1] == water[2] if vr else bool(vb) and vb[1] == water[2])
+        if not vr and same_river:
+            notes.append("계곡 옆 하천 이름 없음 → 유역 이름으로 맞춤")
+        if not same_river:
+            notes.append(f"계곡 옆 하천 '{vr[1] if vr else '-'}' ≠ 수위계 하천 '{water[2] or '-'}' → 다른 물줄기라 B")
+            cls = "B"
+        elif water[1] > WATER_KM:
+            notes.append(f"수위계 {water[1]:.1f}km > {WATER_KM:g}km → 멀어서 B")
+            cls = "B"
+        else:
+            cls = "A"
     else:
         cls = "B"
     return Verdict(cls, rain, water, vb, vr, notes)
