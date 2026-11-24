@@ -348,7 +348,7 @@ class Verdict:
     notes: list
 
 
-def classify(lat, lon, stations, basin_of, river_of, alive_of) -> Verdict:
+def classify(lat, lon, stations, basin_of, river_of, alive_of, rain_alive_of=lambda code: 1) -> Verdict:
     """순수 판단 (조회 함수는 밖에서 넣음 → 테스트 쉬움)."""
     vb = basin_of(lat, lon)
     vr = river_of(lat, lon)
@@ -358,6 +358,10 @@ def classify(lat, lon, stations, basin_of, river_of, alive_of) -> Verdict:
     same = lambda s: vb is not None and basin_of(s.lat, s.lon) == vb   # noqa: E731
 
     rains = [(s, d) for s, d in near if s.kind in ("rainfall", "rainfall_1h")]
+    dead = [(s, d) for s, d in rains if s.source == "hrfco" and rain_alive_of(s.code) == 0]
+    for s, _ in dead:
+        notes.append(f"비 관측소 {s.name} 최근 자료 없음 → 뺌")
+    rains = [x for x in rains if x not in dead]
     in_basin = [(s, d) for s, d in rains if same(s)]
     pool = in_basin or rains
     rain = None
@@ -394,7 +398,7 @@ def classify(lat, lon, stations, basin_of, river_of, alive_of) -> Verdict:
     return Verdict(cls, rain, water, vb, vr, notes)
 
 
-def alive_checker(client):
+def alive_checker(client, kind="waterlevel"):
     from datetime import datetime, timedelta
     from zoneinfo import ZoneInfo
 
@@ -406,7 +410,7 @@ def alive_checker(client):
     def alive(code):
         if code not in cache:
             try:
-                s = replay.fetch(code, "waterlevel", end - timedelta(hours=3), end, client=client)
+                s = replay.fetch(code, kind, end - timedelta(hours=3), end, client=client)
                 cache[code] = sum(v is not None for v in s.values())
             except Exception:  # noqa: BLE001
                 cache[code] = 0
@@ -420,10 +424,10 @@ def classify_all() -> None:
     vs = V.load_csv()
     with _client() as c:
         stations = all_stations(c)
-        geo, alive = Geo(c), alive_checker(c)
+        geo, alive, rain_alive = Geo(c), alive_checker(c), alive_checker(c, "rainfall")
         out = []
         for v in vs:
-            vd = classify(float(v.lat), float(v.lon), stations, geo.basin, geo.river, alive)
+            vd = classify(float(v.lat), float(v.lon), stations, geo.basin, geo.river, alive, rain_alive)
             out.append((v, vd))
     count = {"A": 0, "B": 0, "C": 0}
     lines = []
