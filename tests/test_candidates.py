@@ -24,6 +24,12 @@ def test_parse_tour_filters_valleys():
     one = {"response": {"body": {"totalCount": 1, "items": {"item": payload["response"]["body"]["items"]["item"][0]}}}}
     assert len(C.parse_tour(one)[0]) == 1                                  # 결과 1개면 dict로 옴
     assert C.parse_tour({"response": {"body": {"totalCount": 0, "items": ""}}}) == ([], 0)
+    try:
+        C.parse_tour({"response": {"header": {"resultCode": "30", "resultMsg": "SERVICE_KEY_IS_NOT_REGISTERED"}}})
+    except ValueError as e:
+        assert "SERVICE_KEY" in str(e)
+    else:
+        raise AssertionError("오류 코드는 0건으로 넘기면 안 됨")
 
 
 def test_parse_hrfco_and_kma():

@@ -28,7 +28,7 @@ VWORLD_SEARCH = "https://api.vworld.kr/req/search"
 VWORLD_GEOCODE = "https://api.vworld.kr/req/address"
 HRFCO = "https://api.hrfco.go.kr"
 KMA_STN = "https://apihub.kma.go.kr/api/typ01/url/stn_inf.php"
-GANGWON = "32"                       # 관광공사 지역코드 강원
+GANGWON = "51"                       # 법정동 시도코드 강원 (옛 areaCode=32는 예전 관광지가 빠짐, 11/24 확인)
 OUT = Path(__file__).resolve().parents[1] / "data" / "candidates.csv"
 NEAR_KM = 8.0                        # 이보다 멀면 '관측소 멂' 표시
 
@@ -100,6 +100,9 @@ def is_valley(title: str) -> bool:
 # ---------------------------------------------------------------------------
 
 def parse_tour(payload: dict) -> tuple[list[Place], int]:
+    head = (payload.get("response") or {}).get("header") or {}
+    if head.get("resultCode") not in (None, "0000"):
+        raise ValueError(f"관광공사 오류 {head.get('resultCode')} {head.get('resultMsg')}")
     body = (payload.get("response") or {}).get("body") or {}
     items = (body.get("items") or {})
     items = items.get("item", []) if isinstance(items, dict) else []
@@ -185,16 +188,17 @@ def tour_valleys(regions: list[str], client) -> list[Place]:
     while True:
         r = client.get(TOUR_URL, params={
             "serviceKey": os.environ["TOUR_KEY"], "MobileOS": "ETC", "MobileApp": "yeoulmok", "_type": "json",
-            "keyword": "계곡", "areaCode": GANGWON, "numOfRows": 100, "pageNo": page})
+            "keyword": "계곡", "lDongRegnCd": GANGWON, "numOfRows": 100, "pageNo": page})
         r.raise_for_status()
         try:
             places, total = parse_tour(r.json())
-        except ValueError:
-            raise SystemExit(f"관광공사 응답이 JSON이 아님 (키 승인 전이면 1시간쯤 기다리기): {r.text[:200]}")
+        except ValueError as e:
+            raise SystemExit(f"관광공사 응답 문제 ({e}): {r.text[:200]}")
         out += places
         if page * 100 >= total or not places:
             break
         page += 1
+    print(f"  관광공사 강원 '계곡' 검색 {len(out)}건")
     return [p for p in out if is_valley(p.name) and any(reg in p.addr for reg in regions)]
 
 
