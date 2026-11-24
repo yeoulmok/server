@@ -54,6 +54,11 @@ def test_score_hit_miss_false_alarm():
     assert B.score_day(date(2025, 7, 19), _rows(day, [("04:00", "caution", None)]), None).verdict == ""
 
 
+def test_has_data():
+    assert not B.has_data({}) and not B.has_data({1: None})
+    assert B.has_data({1: None, 2: 0})
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

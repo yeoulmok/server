@@ -168,7 +168,7 @@ def ready() -> bool:
     return bool(os.environ.get("ANTHROPIC_API_KEY"))
 
 
-def call_claude(system: str, user: str, client=None, max_tokens: int = 300) -> str:
+def call_claude(system: str, user: str, client=None, max_tokens: int = 300, with_stop: bool = False):
     own = client is None
     if own:
         import httpx
@@ -192,7 +192,8 @@ def call_claude(system: str, user: str, client=None, max_tokens: int = 300) -> s
                 msg = None
             raise RuntimeError(f"Claude API {r.status_code}: {msg}")
         data = r.json()
-        return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text").strip()
+        text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text").strip()
+        return (text, data.get("stop_reason")) if with_stop else text
     finally:
         if own:
             client.close()

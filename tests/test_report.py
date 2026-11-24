@@ -52,6 +52,7 @@ def test_facts_and_check():
     assert "사실에 없는 숫자" in R.check_draft("경보가 5번 있었어요", f)                # 지어낸 숫자
     assert R.check_draft("30분 뒤 도착할 수 있어요", f) == "도착 시간 예측"
     assert R.check_draft("가" * (R.MAX_CHARS + 1), f).startswith("너무 김")
+    assert R.check_draft(ok, f, "max_tokens") == "중간에 잘림"
 
 
 def test_table():
