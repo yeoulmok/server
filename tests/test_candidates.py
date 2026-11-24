@@ -62,6 +62,63 @@ def test_vworld_parsers():
     assert g.lon == 127.942 and C.parse_vworld_geocode({"response": {"status": "NOT_FOUND"}}, "x") is None
 
 
+# --- 분류 (#52) ---------------------------------------------------------------
+
+def _geo(basins, rivers=None):
+    rivers = rivers or {}
+    return (lambda la, lo: basins.get((round(la, 3), round(lo, 3)))), (lambda la, lo: rivers.get((round(la, 3), round(lo, 3))))
+
+
+def test_classify_a_when_same_basin_gauge_alive():
+    V = (37.278, 128.020)                                       # 금대리
+    st = [C.Station("kma", "582", "신림", "rainfall_1h", 37.270, 128.090),
+          C.Station("hrfco", "R", "신촌리", "rainfall", 37.297, 127.971),
+          C.Station("hrfco", "1006664", "동부교", "waterlevel", 37.319, 127.970),
+          C.Station("hrfco", "X", "딴유역교", "waterlevel", 37.280, 128.030)]
+    basin, river = _geo({(37.278, 128.02): ("100606", "원주천"), (37.27, 128.09): ("100607", "다른"),
+                         (37.297, 127.971): ("100606", "원주천"), (37.319, 127.97): ("100606", "원주천"),
+                         (37.28, 128.03): ("100999", "딴데")},
+                        {(37.319, 127.97): ("지방2급하천", "원주천")})
+    vd = C.classify(*V, st, basin, river, lambda code: 18)
+    assert vd.cls == "A" and vd.water[0].code == "1006664" and vd.water[2] == "원주천"
+    assert vd.rain[0].code == "R" and vd.rain[2] is True          # 같은 유역 HRFCO 우선 (신림은 다른 유역)
+
+
+def test_classify_b_when_gauge_dead_or_other_basin():
+    V = (37.278, 128.020)
+    st = [C.Station("hrfco", "R", "비", "rainfall", 37.279, 128.021),
+          C.Station("hrfco", "W", "죽은교", "waterlevel", 37.280, 128.022)]
+    basin, river = _geo({(37.278, 128.02): ("1", "a"), (37.279, 128.021): ("1", "a"), (37.28, 128.022): ("1", "a")})
+    vd = C.classify(*V, st, basin, river, lambda code: 0)
+    assert vd.cls == "B" and vd.water is None and any("최근 자료 없음" in n for n in vd.notes)
+
+
+def test_classify_c_when_rain_far_and_other_basin():
+    V = (37.0, 128.0)
+    st = [C.Station("hrfco", "R", "먼비", "rainfall", 37.09, 128.0)]             # 10km, 다른 유역
+    basin, river = _geo({(37.0, 128.0): ("1", "a"), (37.09, 128.0): ("2", "b")})
+    assert C.classify(*V, st, basin, river, lambda c: 0).cls == "C"
+
+
+def test_vworld_feature_parser():
+    ok = {"response": {"status": "OK", "result": {"featureCollection": {"features": [
+        {"properties": {"sbsncd": "100606", "sbsnnm": "원주천", "cat_nam": "표준유역"}}]}}}}
+    assert C.parse_vworld_feature(ok, "sbsncd", "sbsnnm") == ("100606", "원주천")
+    assert C.parse_vworld_feature({"response": {"status": "NOT_FOUND"}}, "sbsncd", "sbsnnm") is None
+
+
+def test_link_changes():
+    from app import valleys as VV
+    v = next(x for x in VV.load_csv() if x.name == "금대리 계곡")
+    same = {"upstream_rain": ("kma", "582", "rainfall_1h"), "downstream_water": ("hrfco", "1006664", "waterlevel")}
+    assert VV.link_changes(VV.wanted_links(v), same) == []
+    g = next(x for x in VV.load_csv() if x.name == "구룡사계곡")
+    import dataclasses
+    add_water = dataclasses.replace(g, water_code="1006667", water_name="섬강교")
+    ch = VV.link_changes(VV.wanted_links(add_water), {"upstream_rain": ("kma", "591", "rainfall_1h")})
+    assert ch == [("downstream_water", None, ("hrfco", "1006667", "waterlevel", "섬강교"))]
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):

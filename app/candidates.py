@@ -3,6 +3,14 @@
   python -m app.candidates 원주 횡성 영월        # 관광공사 '계곡' 검색 → 후보표 + data/candidates.csv
   python -m app.candidates --find 용수골계곡      # 관광공사에 없는 곳: 브이월드 검색 API로 이름 → 좌표
   python -m app.candidates --addr "원주시 판부면 서곡리 산 166"   # 브이월드 지오코더: 주소 → 좌표
+  python -m app.candidates --classify          # db/valleys.csv 전부 A/B/C 분류 (표준유역·하천·수위 자료 확인)
+
+분류 (#52)
+  A 비+수위: 같은 표준유역 안에 수위계가 있고 최근 자료가 들어옴 → 규칙만으로 판정 (AI는 수위 결측 때만)
+  B 비만   : 같은 유역 수위계가 없음 → 비 규칙 + 예측 AI
+  C 보류   : 같은 유역에 비 관측소도 없고 가장 가까운 비 관측소가 8km 넘음
+  표준유역·하천 이름은 브이월드 2D데이터(LT_C_WKMSBSN 표준유역, LT_C_WKMSTRM 하천망).
+  11/24 확인: 금대리·동부교 둘 다 100606 원주천 → 이미 아는 정답과 같음.
 
 나온 표를 보고 넣을 계곡을 고르면 db/valleys.csv에 한 줄씩 → python -m app.valleys apply.
 관측소: HRFCO 강수(10분)·수위 + 기상청 AWS(1시간 누적). 키는 ~/secrets/yeoulmok.env
@@ -28,6 +36,9 @@ VWORLD_SEARCH = "https://api.vworld.kr/req/search"
 VWORLD_GEOCODE = "https://api.vworld.kr/req/address"
 HRFCO = "https://api.hrfco.go.kr"
 KMA_STN = "https://apihub.kma.go.kr/api/typ01/url/stn_inf.php"
+VWORLD_DATA = "https://api.vworld.kr/req/data"
+VWORLD_DOMAIN = "https://github.com/yeoulmok/server"
+SEARCH_KM = 12.0                     # 분류할 때 볼 관측소 반경
 GANGWON = "51"                       # 법정동 시도코드 강원 (옛 areaCode=32는 예전 관광지가 빠짐, 11/24 확인)
 OUT = Path(__file__).resolve().parents[1] / "data" / "candidates.csv"
 NEAR_KM = 8.0                        # 이보다 멀면 '관측소 멂' 표시
@@ -288,10 +299,168 @@ def save(rows: list[dict], path: Path = OUT) -> None:
                         _st(r["water"]), csv_line(r) if r["pick"] else ""])
 
 
+# ---------------------------------------------------------------------------
+# 분류 (#52): 표준유역 · 하천 · 수위 자료
+# ---------------------------------------------------------------------------
+
+def parse_vworld_feature(payload: dict, field_code: str, field_name: str) -> tuple[str, str] | None:
+    res = payload.get("response") or {}
+    feats = ((res.get("result") or {}).get("featureCollection") or {}).get("features") or []
+    if not feats:
+        return None
+    pr = feats[0].get("properties") or {}
+    return (str(pr.get(field_code) or ""), str(pr.get(field_name) or ""))
+
+
+class Geo:
+    """브이월드 표준유역·하천 조회 (같은 좌표는 한 번만)."""
+
+    def __init__(self, client):
+        self.c, self.cache = client, {}
+
+    def _get(self, layer, lat, lon, buffer):
+        k = (layer, round(lat, 5), round(lon, 5), buffer)
+        if k not in self.cache:
+            r = self.c.get(VWORLD_DATA, params={"service": "data", "request": "GetFeature", "data": layer,
+                                                "key": os.environ["VWORLD_KEY"], "domain": VWORLD_DOMAIN,
+                                                "format": "json", "size": 1, "geometry": "false",
+                                                "geomFilter": f"POINT({lon} {lat})", "buffer": buffer})
+            r.raise_for_status()
+            self.cache[k] = r.json()
+        return self.cache[k]
+
+    def basin(self, lat, lon):
+        """(표준유역 코드, 이름) 또는 None"""
+        return parse_vworld_feature(self._get("LT_C_WKMSBSN", lat, lon, 1), "sbsncd", "sbsnnm")
+
+    def river(self, lat, lon):
+        """가까운 하천 (코드 자리에 등급, 이름) 또는 None — 작은 계곡은 하천망에 없을 수 있음"""
+        return parse_vworld_feature(self._get("LT_C_WKMSTRM", lat, lon, 500), "cat_nam", "riv_nm")
+
+
+@dataclass
+class Verdict:
+    cls: str                          # A / B / C
+    rain: tuple | None                # (Station, km, 같은유역?)
+    water: tuple | None               # (Station, km, 하천이름, 최근자료칸수)
+    basin: tuple | None
+    river: tuple | None
+    notes: list
+
+
+def classify(lat, lon, stations, basin_of, river_of, alive_of) -> Verdict:
+    """순수 판단 (조회 함수는 밖에서 넣음 → 테스트 쉬움)."""
+    vb = basin_of(lat, lon)
+    vr = river_of(lat, lon)
+    notes = []
+    near = sorted(((s, km(lat, lon, s.lat, s.lon)) for s in stations), key=lambda x: x[1])
+    near = [(s, d) for s, d in near if d <= SEARCH_KM]
+    same = lambda s: vb is not None and basin_of(s.lat, s.lon) == vb   # noqa: E731
+
+    rains = [(s, d) for s, d in near if s.kind in ("rainfall", "rainfall_1h")]
+    in_basin = [(s, d) for s, d in rains if same(s)]
+    pool = in_basin or rains
+    rain = None
+    if pool:
+        hr = next(((s, d) for s, d in pool if s.kind == "rainfall"), None)
+        km_ = next(((s, d) for s, d in pool if s.kind == "rainfall_1h"), None)
+        pick = hr if hr else km_
+        if km_ and hr and km_[1] < hr[1] * 0.5:
+            pick = km_
+        rain = (pick[0], pick[1], bool(in_basin))
+        if not in_basin:
+            notes.append("같은 유역에 비 관측소 없음 → 가장 가까운 것")
+
+    water = None
+    for s, d in near:
+        if s.kind != "waterlevel" or not same(s):
+            continue
+        n = alive_of(s.code)
+        if n == 0:
+            notes.append(f"수위계 {s.name} 같은 유역이지만 최근 자료 없음")
+            continue
+        rv = river_of(s.lat, s.lon)
+        water = (s, d, rv[1] if rv else "", n)
+        break
+
+    if rain is None or (not rain[2] and rain[1] > NEAR_KM):
+        cls = "C"
+    elif water:
+        cls = "A"
+        if vr and water[2] and vr[1] != water[2]:
+            notes.append(f"계곡 옆 하천 '{vr[1]}' ≠ 수위계 하천 '{water[2]}' (같은 유역 안 다른 지류일 수 있음)")
+    else:
+        cls = "B"
+    return Verdict(cls, rain, water, vb, vr, notes)
+
+
+def alive_checker(client):
+    from datetime import datetime, timedelta
+    from zoneinfo import ZoneInfo
+
+    from app import replay
+
+    cache = {}
+    end = replay.floor10(datetime.now(ZoneInfo("Asia/Seoul")))
+
+    def alive(code):
+        if code not in cache:
+            try:
+                s = replay.fetch(code, "waterlevel", end - timedelta(hours=3), end, client=client)
+                cache[code] = sum(v is not None for v in s.values())
+            except Exception:  # noqa: BLE001
+                cache[code] = 0
+        return cache[code]
+    return alive
+
+
+def classify_all() -> None:
+    from app import valleys as V
+
+    vs = V.load_csv()
+    with _client() as c:
+        stations = all_stations(c)
+        geo, alive = Geo(c), alive_checker(c)
+        out = []
+        for v in vs:
+            vd = classify(float(v.lat), float(v.lon), stations, geo.basin, geo.river, alive)
+            out.append((v, vd))
+    count = {"A": 0, "B": 0, "C": 0}
+    lines = []
+    for v, vd in out:
+        count[vd.cls] += 1
+        b = f"{vd.basin[1]}({vd.basin[0]})" if vd.basin else "유역 모름"
+        rv = vd.river[1] if vd.river else "-"
+        r = vd.rain
+        rain_txt = f"{r[0].name} {r[0].source}:{r[0].code} {r[1]:.1f}km{'' if r[2] else ' (다른 유역)'}" if r else "-"
+        w = vd.water
+        water_txt = f"{w[0].name} hrfco:{w[0].code} {w[1]:.1f}km 하천 {w[2] or '-'} 최근3h {w[3]}칸" if w else "-"
+        now = f"{v.rain_source}:{v.rain_code}" + (f" + 수위 {v.water_code}" if v.water_code else "")
+        print(f"\n[{vd.cls}] {v.name}  유역 {b}  옆 하천 {rv}")
+        print(f"    비: {rain_txt}")
+        print(f"    수위: {water_txt}")
+        print(f"    지금 연결: {now}")
+        for n in vd.notes:
+            print(f"    ⚠ {n}")
+        if r:
+            wc, wn = (w[0].code, w[0].name) if (w and vd.cls == "A") else ("", "")
+            lines.append(f"{v.name},{v.region},{v.lat},{v.lon},{r[0].source},{r[0].code},{r[0].name},{r[0].kind},"
+                         f"{wc},{wn},{v.status},{v.note}")
+    print(f"\nA 비+수위 {count['A']} / B 비만(AI) {count['B']} / C 보류 {count['C']}")
+    path = OUT.parent / "valleys_classified.csv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("name,region,lat,lon,rain_source,rain_code,rain_name,rain_kind,water_code,water_name,status,note\n"
+                    + "\n".join(lines) + "\n", encoding="utf-8")
+    print(f"분류대로 고친 목록: {path}  (확인 후 db/valleys.csv로)")
+
+
 def main(argv=None) -> None:
     argv = sys.argv[1:] if argv is None else argv
     if not argv:
         print(__doc__)
+        return
+    if argv[0] == "--classify":
+        classify_all()
         return
     with _client() as c:
         if argv[0] == "--find":
