@@ -165,6 +165,16 @@ def test_classify_b_when_other_river_or_far():                      # #69
     assert vd.cls == "B" and any("멀어서" in n for n in vd.notes)
 
 
+def test_classify_skips_flat_gauge():
+    V = (37.278, 128.020)
+    st = [C.Station("hrfco", "R", "비", "rainfall", 37.279, 128.021),
+          C.Station("hrfco", "1006693", "궁촌", "waterlevel", 37.280, 128.022)]
+    basin, river = _geo({(37.278, 128.02): ("1", "a"), (37.279, 128.021): ("1", "a"), (37.28, 128.022): ("1", "a")},
+                        {(37.278, 128.02): ("소하천", "궁촌천"), (37.28, 128.022): ("소하천", "궁촌천")})
+    vd = C.classify(*V, st, basin, river, lambda c: 18)
+    assert vd.cls == "B" and any("안 움직임" in n for n in vd.notes)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
