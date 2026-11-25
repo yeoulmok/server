@@ -335,6 +335,7 @@ def main() -> None:
             # DB 접속 실패 등 회차 전체 오류도 루프는 유지
             log.exception("수집 회차 전체 실패")
         elapsed = time.monotonic() - started
+        log.info("회차 걸린 시간 %.0f초 (5분 = 300초 넘으면 관측소가 너무 많음)", elapsed)
         time.sleep(max(0.0, INTERVAL_SECONDS - elapsed))
 
 

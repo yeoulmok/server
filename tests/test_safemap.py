@@ -39,6 +39,27 @@ def test_cluster():
     assert len(sp) == 2 and sp[0].visitors == 20 and sp[0].accidents == 3 and sp[0].risk and sp[0].addrs == ["a", "b"]
 
 
+def test_pick_all_gangwon():
+    rows = [{"CTPV_NM": "강원특별자치도", "SGG_NM": "춘천시"}, {"CTPV_NM": "경기도", "SGG_NM": "가평군"}]
+    assert len(S.pick(rows, None)) == 1 and S.pick(rows) == []
+
+
+def test_dedupe():
+    from app import candidates as C
+    from types import SimpleNamespace as NS
+
+    def cand(name, river, lat, water=None, rain="R1", risk=False, acc=0, near=3.0):
+        sp = S.Spot(lat, 128.0, "춘천시", "x", risk=risk, accidents=acc)
+        return S.Cand(name, "춘천시", "x", lat, 128.0, "A" if water else "B", river,
+                      ("hrfco", rain, "비", "rainfall", near), (water, "교", near) if water else None, sp)
+    existing = [NS(name="있던곳", lat="37.0", lon="128.0", water_code="W9", rain_code="R9")]
+    cs = [cand("가", "가천", 37.5, water="W1"), cand("나", "가천", 37.51, water="W1", risk=True),   # 같은 강·수위계 → 위험구역 쪽
+          cand("다", "다천", 37.6), cand("라", "다천", 37.61, near=1.0),                         # B 같은 강·비 → 가까운 쪽
+          cand("마", "마천", 37.01, water="W9")]                                               # 있던 곳과 같은 수위계 2km
+    keep, dropped = S.dedupe(cs, existing, C.km)
+    assert sorted(k.name for k in keep) == ["나", "라"] and len(dropped) == 3
+
+
 if __name__ == "__main__":
     for k, f in list(globals().items()):
         if k.startswith("test_"):

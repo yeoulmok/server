@@ -3,6 +3,7 @@
   python -u -m app.safemap --probe      # 응답 모양만 보기 (키는 안 찍음)
   python -u -m app.safemap               # 원주·횡성·영월·강릉 관리지역 → 우리 21곳과 맞춰 보고 새 후보 + 관측소
   python -u -m app.safemap --merge       # 1.5km 안은 한 곳으로 묶고, 큰 강 본류 빼고, A/B 분류 → valleys.csv 줄
+  python -u -m app.safemap --merge --all # 강원 전체 + 같은 강·같은 관측소는 자동으로 하나만 (#77)
 키: ~/secrets/yeoulmok.env 의 SAFEMAP_KEY
 """
 from __future__ import annotations
@@ -38,7 +39,9 @@ def items(payload: dict) -> tuple[list[dict], int]:
 
 
 def pick(rows: list[dict], regions=REGIONS) -> list[dict]:
-    return [r for r in rows if "강원" in (r.get("CTPV_NM") or "") and any(g in (r.get("SGG_NM") or "") for g in regions)]
+    """regions=None 이면 강원 전체."""
+    return [r for r in rows if "강원" in (r.get("CTPV_NM") or "")
+            and (regions is None or any(g in (r.get("SGG_NM") or "") for g in regions))]
 
 
 def place_of(r: dict):
@@ -102,7 +105,7 @@ def probe() -> None:
             break
 
 
-MAIN_RIVERS = ("남한강", "동강", "서강", "평창강", "섬강", "한강")   # 큰 강 본류: 계곡 비 규칙이 안 맞음(댐·상류 방류) → 뺌
+MAIN_RIVERS = ("남한강", "동강", "서강", "평창강", "섬강", "한강", "북한강", "소양강", "홍천강")   # 큰 강 본류: 계곡 비 규칙이 안 맞음(댐·상류 방류) → 뺌
 VALLEY_OUT = Path("data/safemap_valleys.csv")
 
 
@@ -156,7 +159,53 @@ def cluster(rows: list[dict], km_fn, within: float = NEAR_KM) -> list[Spot]:
     return spots
 
 
-def merge() -> None:
+@dataclass
+class Cand:
+    name: str
+    sgg: str
+    emd: str
+    lat: float
+    lon: float
+    cls: str
+    river: str
+    rain: tuple            # (source, code, name, kind, km)
+    water: tuple | None    # (code, name, km) — A만
+    spot: Spot
+    notes: list = field(default_factory=list)
+
+    @property
+    def key(self) -> tuple:
+        """같은 강 + 같은 관측소면 같은 곳으로 봄 (A는 수위계, B는 비 관측소)."""
+        return (self.river or self.name, self.water[0] if self.water else f"rain:{self.rain[1]}")
+
+    @property
+    def score(self) -> tuple:
+        """남길 우선순위: 위험구역 > 사고 많음 > 관측소 가까움."""
+        near = self.water[2] if self.water else self.rain[4]
+        return (self.spot.risk, self.spot.accidents, -near)
+
+
+def dedupe(cands: list[Cand], existing: list, km_fn, near_km: float = 4.0) -> tuple[list[Cand], list[str]]:
+    """같은 강·같은 관측소 후보는 하나만, 이미 있는 계곡과 같은 관측소로 4km 안이면 뺌."""
+    best: dict[tuple, Cand] = {}
+    dropped = []
+    for c in cands:
+        dup = next((v for v in existing if km_fn(c.lat, c.lon, float(v.lat), float(v.lon)) <= near_km and (
+            (c.water and v.water_code == c.water[0]) or (not c.water and not v.water_code and v.rain_code == c.rain[1]))), None)
+        if dup:
+            dropped.append(f"{c.name} — 이미 있는 '{dup.name}'와 같은 관측소")
+            continue
+        k = c.key
+        if k not in best or c.score > best[k].score:
+            if k in best:
+                dropped.append(f"{best[k].name} — '{c.name}'와 같은 강·관측소")
+            best[k] = c
+        else:
+            dropped.append(f"{c.name} — '{best[k].name}'와 같은 강·관측소")
+    return list(best.values()), dropped
+
+
+def merge(all_gangwon: bool = False) -> None:
     import httpx
 
     from app import candidates as C
@@ -165,55 +214,60 @@ def merge() -> None:
     key = os.environ.get("SAFEMAP_KEY")
     if not key:
         sys.exit("SAFEMAP_KEY 없음")
-    have = [(v.name, float(v.lat), float(v.lon)) for v in V.load_csv()]
-    names = {v.name for v in V.load_csv()}
+    existing = V.load_csv()
+    have = [(v.name, float(v.lat), float(v.lon)) for v in existing]
+    names = {v.name for v in existing}
     with httpx.Client(timeout=30) as c:
-        mine = pick(fetch_all(c, key))
-        spots = [s for s in cluster(mine, C.km)
-                 if all(C.km(s.lat, s.lon, la, lo) > NEAR_KM for _, la, lo in have)]
-        print(f"관리지역 {len(mine)}개 → 1.5km 안 묶으니 {len(cluster(mine, C.km))}곳, 우리 21곳과 안 겹치는 곳 {len(spots)}곳\n")
+        mine = pick(fetch_all(c, key), None if all_gangwon else REGIONS)
+        allspots = cluster(mine, C.km)
+        spots = [s for s in allspots if all(C.km(s.lat, s.lon, la, lo) > NEAR_KM for _, la, lo in have)]
+        where = "강원 전체" if all_gangwon else ", ".join(REGIONS)
+        print(f"{where} 관리지역 {len(mine)}개 → 1.5km 안 묶으니 {len(allspots)}곳, 우리 {len(have)}곳과 안 겹치는 곳 {len(spots)}곳", flush=True)
         stations = C.all_stations(c)
         geo, alive, rain_alive = C.Geo(c), C.alive_checker(c), C.alive_checker(c, "rainfall")
-        lines, skipped, cnt = [], [], {"A": 0, "B": 0}
-        for s in spots:
+        cands, skipped = [], []
+        for n, s in enumerate(spots, 1):
+            if n % 10 == 0:
+                print(f"  … {n}/{len(spots)} 분류 중", flush=True)
             vd = C.classify(s.lat, s.lon, stations, geo.basin, geo.river, alive, rain_alive)
             rv = vd.river[1] if vd.river else ""
             ri = ri_of(s.addrs[0]) if s.addrs else s.emd
             label = f"{s.sgg} {ri} ({rv or '하천 모름'})"
-            extra = f"사고 {s.accidents}" + (", 위험구역" if s.risk else "") + (f", {'/'.join(sorted(s.actions))}" if s.actions else "")
             if any(m in rv for m in MAIN_RIVERS):
                 skipped.append(f"{label} — 큰 강 본류")
                 continue
             if vd.cls == "C" or not vd.rain:
                 skipped.append(f"{label} — 비 관측소 멂")
                 continue
-            name = f"{ri} {rv}".strip() if rv else f"{ri} 물놀이지역"
-            if name in names:
-                name = f"{name}({s.sgg[:2]})"
-            names.add(name)
             r, w = vd.rain, vd.water
-            wc, wn = (w[0].code, w[0].name) if (w and vd.cls == "A") else ("", "")
-            cnt[vd.cls] += 1
-            note = (f"{vd.cls} {'비+수위' if vd.cls == 'A' else '비만'}. 행안부 물놀이 관리지역(#63) {extra}. "
-                    f"비 {r[1]:.1f}km" + (f", 수위 {w[1]:.1f}km" if wc else "") + f". 주소 {s.addrs[0] if s.addrs else ''}")
-            print(f"[{vd.cls}] {name}  ({s.sgg} {s.emd})  비 {r[0].name} {r[1]:.1f}km"
-                  + (f"  수위 {wn} {w[1]:.1f}km" if wc else "") + f"  | {extra}")
-            for n in vd.notes:
-                print(f"    ⚠ {n}")
-            lines.append([name, f"{s.sgg} {s.emd}", f"{s.lat:.6f}", f"{s.lon:.6f}", r[0].source, r[0].code, r[0].name,
-                          r[0].kind, wc, wn, "시범", note])
-    print("\n뺀 곳:")
-    for x in skipped:
+            water = (w[0].code, w[0].name, w[1]) if (w and vd.cls == "A") else None
+            cands.append(Cand(f"{ri} {rv}".strip() if rv else f"{ri} 물놀이지역", s.sgg, s.emd, s.lat, s.lon, vd.cls, rv,
+                              (r[0].source, r[0].code, r[0].name, r[0].kind, r[1]), water, s, list(vd.notes)))
+    keep, dropped = dedupe(cands, existing, C.km)
+    lines, cnt = [], {"A": 0, "B": 0}
+    for k in sorted(keep, key=lambda x: (x.sgg, x.name)):
+        name = k.name if k.name not in names else f"{k.name}({k.sgg[:2]})"
+        names.add(name)
+        cnt[k.cls] += 1
+        sp = k.spot
+        extra = f"사고 {sp.accidents}" + (", 위험구역" if sp.risk else "") + (f", {'/'.join(sorted(sp.actions))}" if sp.actions else "")
+        note = (f"{k.cls} {'비+수위' if k.cls == 'A' else '비만'}. 행안부 물놀이 관리지역(#63) {extra}. 비 {k.rain[4]:.1f}km"
+                + (f", 수위 {k.water[2]:.1f}km" if k.water else "") + f". 주소 {sp.addrs[0] if sp.addrs else ''}")
+        print(f"[{k.cls}] {name}  ({k.sgg} {k.emd})  비 {k.rain[2]} {k.rain[4]:.1f}km"
+              + (f"  수위 {k.water[1]} {k.water[2]:.1f}km" if k.water else "") + f"  | {extra}")
+        lines.append([name, f"{k.sgg} {k.emd}", f"{k.lat:.6f}", f"{k.lon:.6f}", k.rain[0], k.rain[1], k.rain[2], k.rain[3],
+                      k.water[0] if k.water else "", k.water[1] if k.water else "", "시범", note])
+    print(f"\n뺀 곳 {len(skipped) + len(dropped)} (본류·관측소 멂 {len(skipped)}, 겹침 {len(dropped)})")
+    for x in skipped + dropped:
         print(f"  - {x}")
-    print(f"\n넣을 후보 A {cnt['A']} / B {cnt['B']}  (뺀 곳 {len(skipped)})")
+    print(f"\n넣을 후보 A {cnt['A']} / B {cnt['B']}")
     VALLEY_OUT.parent.mkdir(parents=True, exist_ok=True)
     with VALLEY_OUT.open("w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
         w.writerow(["name", "region", "lat", "lon", "rain_source", "rain_code", "rain_name", "rain_kind",
                     "water_code", "water_name", "status", "note"])
         w.writerows(lines)
-    print(f"표: {VALLEY_OUT}  (cat 해서 붙여 주면 db/valleys.csv에 넣음)")
-
+    print(f"표: {VALLEY_OUT}")
 
 EXTRA = ("STOT", "WOWA_ACDNT_STOT", "RSK_ZONE_SCTN", "MNG_RGN_DPCN_YN", "SFTY_ACTN_MTTR", "ETC")
 
@@ -253,6 +307,6 @@ if __name__ == "__main__":
     if "--probe" in sys.argv:
         probe()
     elif "--merge" in sys.argv:
-        merge()
+        merge("--all" in sys.argv)
     else:
         main()
