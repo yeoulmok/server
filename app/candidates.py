@@ -39,6 +39,7 @@ REGION_BBOX = {                      # 브이월드 검색 범위 (대략, 주�
     "원주": (127.72, 37.17, 128.22, 37.52), "횡성": (127.78, 37.33, 128.38, 37.72),
     "영월": (128.08, 37.03, 128.82, 37.42), "강릉": (128.58, 37.48, 129.12, 37.98),
 }
+FLAT_GAUGES = {"1006693"}             # 값은 오지만 안 움직이는 수위계 (궁촌: 2024~25 여름 내내 0.00m, 11/25)
 WATER_KM = 8.0                       # A 수위계 최대 거리 (#69)
 SAME_KM = 1.0                        # 이 거리 안이면 같은 곳으로 봄
 VWORLD_SEARCH = "https://api.vworld.kr/req/search"
@@ -491,6 +492,9 @@ def classify(lat, lon, stations, basin_of, river_of, alive_of, rain_alive_of=lam
     water = None
     for s, d in near:
         if s.kind != "waterlevel" or not same(s):
+            continue
+        if s.code in FLAT_GAUGES:
+            notes.append(f"수위계 {s.name} 값이 안 움직임 (고장 의심) → 뺌")
             continue
         n = alive_of(s.code)
         if n == 0:
