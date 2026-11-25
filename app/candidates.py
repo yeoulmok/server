@@ -229,12 +229,16 @@ def all_stations(client) -> list[Station]:
         r = client.get(f"{HRFCO}/{os.environ['HRFCO_KEY']}/{kind}/info.json")
         r.raise_for_status()
         st += parse_hrfco(r.json(), kind)
-    try:
-        r = client.get(KMA_STN, params={"inf": "AWS", "stn": "", "help": 0, "authKey": os.environ["KMA_KEY"]})
-        r.raise_for_status()
-        st += parse_kma_stn(r.content.decode("euc-kr", errors="replace"))
-    except Exception as e:  # noqa: BLE001 — 기상청 목록을 못 받아도 HRFCO만으로 진행
-        print(f"  (기상청 AWS 지점 목록 못 받음: {type(e).__name__} → HRFCO만)")
+    for attempt in range(3):                      # 기상청이 느릴 때가 많아서 세 번까지
+        try:
+            r = client.get(KMA_STN, params={"inf": "AWS", "stn": "", "help": 0, "authKey": os.environ["KMA_KEY"]},
+                           timeout=60)
+            r.raise_for_status()
+            st += parse_kma_stn(r.content.decode("euc-kr", errors="replace"))
+            break
+        except Exception as e:  # noqa: BLE001 — 기상청 목록을 못 받아도 HRFCO만으로 진행
+            if attempt == 2:
+                print(f"  (기상청 AWS 지점 목록 못 받음: {type(e).__name__} → HRFCO만)")
     return st
 
 
