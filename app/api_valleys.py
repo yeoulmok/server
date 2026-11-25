@@ -52,34 +52,50 @@ def _not_found(valley_id: int) -> JSONResponse:
         "error": {"code": "VALLEY_NOT_FOUND", "message": "계곡 정보를 찾을 수 없어요"}})
 
 
-def _valley_list(sql: str, params: tuple, x_device_id: str | None) -> dict:
-    """4번·6번 공용. sql은 valleys에서 (id, name, region, lat, lon)을 고르는 쿼리."""
+def _valley_list(sql: str, params: tuple, x_device_id: str | None, page: dict | None = None) -> dict:
+    """4번·6번 공용. sql은 valleys에서 (id, name, region, lat, lon)을 고르는 쿼리.
+    page = {q, province, city, limit, offset} 이면 거르고 잘라서 total·limit·offset도 붙임."""
     now = datetime.now(vv.KST)
     with connect() as conn, conn.cursor() as cur:
         cur.execute(sql, params)
         valleys = cur.fetchall()
+        total = len(valleys)
+        if page is not None:
+            valleys, total = vv.filter_page(valleys, **page)
         ids = [v[0] for v in valleys]
         cur.execute(LATEST_STATUS, (ids,))
         rows = {r[0]: r for r in cur.fetchall()}
         status = {vid: r[1:5] for vid, r in rows.items()}
         sources = _sources(cur, ids)
         subs = _subscribed(cur, x_device_id)
-    return {
+    out = {
         "updated_at": vv.fmt_time(now),
         "source": vv.source_text(sources),
-        "valleys": [vv.summary_row(v, status.get(v[0]), now, v[0] in subs,
-                                   bool(rows[v[0]][7]) if v[0] in rows else False) for v in valleys],
     }
+    if page is not None:
+        out.update({"total": total, "limit": page["limit"], "offset": page["offset"]})
+    out["valleys"] = [vv.summary_row(v, status.get(v[0]), now, v[0] in subs,
+                                     bool(rows[v[0]][7]) if v[0] in rows else False) for v in valleys]
+    return out
 
 
 @router.get("/valleys")
-def list_valleys(q: str | None = None, x_device_id: str | None = Header(default=None)):
-    sql = "SELECT id, name, region, lat, lon FROM valleys WHERE is_active"
-    params: tuple = ()
-    if q:
-        sql += " AND (name ILIKE %s OR region ILIKE %s)"
-        params = (f"%{q}%", f"%{q}%")
-    return _valley_list(sql + " ORDER BY id", params, x_device_id)
+def list_valleys(q: str | None = None, province: str | None = None, city: str | None = None,
+                 limit: int | None = Query(default=None, ge=1, le=100), offset: int = Query(default=0, ge=0),
+                 x_device_id: str | None = Header(default=None)):
+    """v0.7: province·city·limit·offset 추가 (#82). limit 없으면 예전처럼 전부."""
+    page = {"q": q, "province": province, "city": city, "limit": limit, "offset": offset}
+    return _valley_list("SELECT id, name, region, lat, lon FROM valleys WHERE is_active", (), x_device_id, page)
+
+
+@router.get("/regions")
+def list_regions():
+    """v0.7: 도·시군 목록과 계곡 수 (검색어와 상관없이 전체)."""
+    with connect() as conn, conn.cursor() as cur:
+        cur.execute("SELECT id, name, region, lat, lon FROM valleys WHERE is_active")
+        valleys = cur.fetchall()
+    return {"updated_at": vv.fmt_time(datetime.now(vv.KST)), "total": len(valleys),
+            "provinces": vv.region_counts(valleys)}
 
 
 @router.get("/valleys/{valley_id}")

@@ -114,6 +114,45 @@ def test_history_points():
     assert none[0] == {"at": "2026-08-22T04:30", "rain_1h_mm": None, "water_level_m": None,
                        "water_rise_30m_m": None, "level": None}
 
+# --- v0.7 도·시군, 나눠 받기 (#82) -------------------------------------------------
+
+def test_split_region():
+    assert vv.split_region("원주시 판부면") == ("강원", "원주시")
+    assert vv.split_region("서울특별시 관악구 신림동") == ("서울", "관악구")
+    assert vv.split_region("세종특별자치시 금남면") == ("세종", "세종시")
+    assert vv.split_region("대구광역시 군위군 부계면") == ("대구", "군위군")
+    assert vv.split_region("전북특별자치도 무주군 설천면") == ("전북", "무주군")
+    assert vv.split_region("") == (None, None)
+
+
+V = [(3, "나계곡", "원주시 판부면", 0, 0), (1, "가계곡", "횡성군 갑천면", 0, 0),
+     (2, "가계곡", "원주시 신림면", 0, 0), (4, "도림천", "서울특별시 관악구 신림동", 0, 0)]
+
+
+def test_filter_page():
+    rows, total = vv.filter_page(V)                                   # limit 없음 → 전부, id순
+    assert [r[0] for r in rows] == [1, 2, 3, 4] and total == 4
+    rows, total = vv.filter_page(V, province="강원", limit=2, offset=0)  # 이름순, 같으면 id순
+    assert [r[0] for r in rows] == [1, 2] and total == 3
+    rows, total = vv.filter_page(V, province="강원", limit=2, offset=2)
+    assert [r[0] for r in rows] == [3] and total == 3
+    rows, total = vv.filter_page(V, province="강원", city="원주시", q="나", limit=20, offset=0)
+    assert [r[0] for r in rows] == [3] and total == 1
+    assert vv.filter_page(V, q="신림", limit=20, offset=0)[1] == 2      # 이름·region 둘 다 찾음
+
+
+def test_region_counts():
+    out = vv.region_counts(V)
+    assert out[0] == {"province": "강원", "count": 3,
+                      "cities": [{"city": "원주시", "count": 2}, {"city": "횡성군", "count": 1}]}
+    assert out[1]["province"] == "서울" and out[1]["cities"] == [{"city": "관악구", "count": 1}]
+
+
+def test_summary_row_has_province_city():
+    row = vv.summary_row((1, "금대리 계곡", "원주시 판부면", 37.3, 128.0), None, datetime(2026, 11, 25, tzinfo=vv.KST), False)
+    assert row["province"] == "강원" and row["city"] == "원주시"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
