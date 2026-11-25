@@ -25,6 +25,7 @@ def test_items_and_pick():
 def test_ri_of():
     assert S.ri_of("강원특별자치도 영월군 김삿갓면 대야리 211-3") == "대야리"
     assert S.ri_of("강원특별자치도 원주시 지정면 소금산길 100") == "지정면"
+    assert S.ri_of("강원특별자치도 동해시 삼화동 산 1") == "삼화동"
 
 
 def test_cluster():
@@ -58,6 +59,16 @@ def test_dedupe():
           cand("마", "마천", 37.01, water="W9")]                                               # 있던 곳과 같은 수위계 2km
     keep, dropped = S.dedupe(cs, existing, C.km)
     assert sorted(k.name for k in keep) == ["나", "라"] and len(dropped) == 3
+
+
+def test_rank_and_pick_top():
+    a = S.Spot(0, 0, "", "", accidents=0, risk=True, visitors=5)
+    b = S.Spot(0, 0, "", "", accidents=3)
+    c = S.Spot(0, 0, "", "", accidents=0, visitors=50)
+    assert S.rank([c, a, b]) == [b, a, c]
+    mk = lambda cls: S.Cand("x", "", "", 0, 0, cls, "", ("", "", "", "", 1.0), None, a)  # noqa: E731
+    B1, A1 = mk("B"), mk("A")
+    assert S.pick_top([None, B1, A1]) is A1 and S.pick_top([B1, None]) is B1 and S.pick_top([None]) is None
 
 
 if __name__ == "__main__":
