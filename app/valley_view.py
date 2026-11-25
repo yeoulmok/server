@@ -73,6 +73,71 @@ def pick_threshold(value, limits: dict[str, Decimal | None]) -> float | None:
     return num(best)
 
 
+SIDO = {
+    "서울특별시": "서울", "부산광역시": "부산", "대구광역시": "대구", "인천광역시": "인천", "광주광역시": "광주",
+    "대전광역시": "대전", "울산광역시": "울산", "세종특별자치시": "세종", "경기도": "경기",
+    "강원특별자치도": "강원", "강원도": "강원", "충청북도": "충북", "충청남도": "충남",
+    "전북특별자치도": "전북", "전라북도": "전북", "전라남도": "전남", "경상북도": "경북", "경상남도": "경남",
+    "제주특별자치도": "제주",
+}
+
+
+def split_region(region: str | None) -> tuple[str | None, str | None]:
+    """region → (도 짧은 이름, 시·군·구). 강원 계곡은 region에 도가 없음('원주시 판부면') → 강원.
+    '서울특별시 관악구 신림동' → ('서울', '관악구'), '세종특별자치시 금남면' → ('세종', '세종시')."""
+    parts = (region or "").split()
+    if not parts:
+        return None, None
+    if parts[0] in SIDO:
+        prov, rest = SIDO[parts[0]], parts[1:]
+    else:
+        prov, rest = "강원", parts
+    city = next((w for w in rest if w.endswith(("시", "군", "구"))), None)
+    if prov == "세종" and city is None:
+        city = "세종시"
+    return prov, city
+
+
+def _match(v: tuple, q: str | None, province: str | None, city: str | None) -> bool:
+    _, name, region, _, _ = v
+    p, c = split_region(region)
+    if province and p != province:
+        return False
+    if city and c != city:
+        return False
+    if q:
+        ql = q.lower()
+        return ql in (name or "").lower() or ql in (region or "").lower()
+    return True
+
+
+def filter_page(valleys: list[tuple], q=None, province=None, city=None, limit=None, offset=0) -> tuple[list[tuple], int]:
+    """필터 → (이번 쪽 계곡들, 필터에 맞는 전체 수). limit 없으면 전부 id순(예전 그대로),
+    있으면 이름 가나다순 → id순으로 잘라 줌 (쪽 사이에 겹침·빠짐 없게)."""
+    hit = [v for v in valleys if _match(v, q, province, city)]
+    if limit is None:
+        return sorted(hit, key=lambda v: v[0]), len(hit)
+    hit.sort(key=lambda v: (v[1] or "", v[0]))
+    return hit[offset: offset + limit], len(hit)
+
+
+def region_counts(valleys: list[tuple]) -> list[dict]:
+    """GET /regions — 도별(많은 순) → 시·군별(많은 순, 같으면 이름순) 개수."""
+    tree: dict[str, dict[str, int]] = {}
+    for v in valleys:
+        p, c = split_region(v[2])
+        if p is None:
+            continue
+        tree.setdefault(p, {})
+        tree[p][c or "기타"] = tree[p].get(c or "기타", 0) + 1
+    out = []
+    for p, cities in tree.items():
+        cs = sorted(cities.items(), key=lambda x: (-x[1], x[0]))
+        out.append({"province": p, "count": sum(cities.values()),
+                    "cities": [{"city": c, "count": n} for c, n in cs]})
+    return sorted(out, key=lambda x: (-x["count"], x["province"]))
+
+
 def summary_row(valley: tuple, status: tuple | None, now: datetime, subscribed: bool,
                 estimated: bool = False) -> dict:
     """GET /valleys 의 계곡 한 줄. valley = (id, name, region, lat, lon),
@@ -86,6 +151,8 @@ def summary_row(valley: tuple, status: tuple | None, now: datetime, subscribed: 
         "id": vid,
         "name": name,
         "region": region,
+        "province": split_region(region)[0],
+        "city": split_region(region)[1],
         "lat": num(lat),
         "lon": num(lon),
         "level": level,
