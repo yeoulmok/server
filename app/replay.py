@@ -12,6 +12,7 @@
   python -m app.replay setup                       # 시연 계곡 만들기 (여러 번 해도 같음)
   python -m app.replay run 8/22 --speed 10         # 8/22 비를 10배속으로 (10분 자료 1칸 = 1분)
   python -m app.replay run 7/8                     # 실제 속도 (10분마다 1칸)
+  python -m app.replay run 8/22 --quick --speed 30 # 차오르는 부분만 잘라서 (주의 20분 전 ~ 가장 높은 단계 20분 뒤), 2~3분
   python -m app.replay stop [--hide]               # 시연 자료 지우기 (--hide: 앱 목록에서도 숨김)
 """
 
@@ -55,6 +56,40 @@ def parse_event(name: str) -> tuple[datetime, datetime]:
         raise SystemExit(f"모르는 날짜 {name}. 고를 수 있는 것: {', '.join(EVENTS)}")
     s, e = (datetime.strptime(x, "%Y-%m-%d %H:%M").replace(tzinfo=KST) for x in EVENTS[name])
     return s, e
+
+
+QUICK_RAIN = (15, 25, 40)          # 시연 자르기용 (기본 기준과 같음)
+QUICK_RISE = (Decimal("0.10"), Decimal("0.20"), Decimal("0.30"))
+QUICK_PAD = timedelta(minutes=20)
+
+
+def quick_window(series: dict[str, dict], start: datetime, end: datetime) -> tuple[datetime, datetime]:
+    """차오르는 구간만: 처음 주의가 될 칸 20분 전 ~ 가장 높은 단계에 처음 닿은 칸 20분 뒤.
+    rain = 10분 강수(6칸 합 = 1시간), water = 수위(30분 전과 차이). 경보가 없으면 원래 구간 그대로."""
+    rain, water = series.get("rain", {}), series.get("water", {})
+
+    def level(t: datetime) -> int:
+        vals = [rain.get(t - STEP * k) for k in range(6)]
+        r = sum(v for v in vals if v is not None) if any(v is not None for v in vals) else None
+        w, w0 = water.get(t), water.get(t - timedelta(minutes=30))
+        rise = (w - w0) if (w is not None and w0 is not None) else None
+        lv = 0
+        for i in range(3):
+            if (r is not None and r >= QUICK_RAIN[i]) or (rise is not None and rise >= QUICK_RISE[i]):
+                lv = i + 1
+        return lv
+
+    times, t = [], start
+    while t <= end:
+        times.append((t, level(t)))
+        t += STEP
+    hits = [(t, lv) for t, lv in times if lv > 0]
+    if not hits:
+        return start, end
+    top = max(lv for _, lv in hits)
+    first = hits[0][0]
+    first_top = next(t for t, lv in hits if lv == top)
+    return max(start, first - QUICK_PAD), min(end, first_top + QUICK_PAD)
 
 
 def floor10(t: datetime) -> datetime:
@@ -184,7 +219,7 @@ def write_step(conn, series: dict[str, dict], pointer: datetime, anchor: datetim
 # 명령
 # ---------------------------------------------------------------------------
 
-def run(event: str, speed: float, sleep=time.sleep, clock=lambda: datetime.now(KST)) -> None:
+def run(event: str, speed: float, sleep=time.sleep, clock=lambda: datetime.now(KST), quick: bool = False) -> None:
     from app import judge
 
     start, end = parse_event(event)
@@ -192,6 +227,9 @@ def run(event: str, speed: float, sleep=time.sleep, clock=lambda: datetime.now(K
     series = {code: fetch(src, kind, start - PAD, end) for code, (src, kind, _, _) in REPLAY_STATIONS.items()}
     for code, data in series.items():
         print(f"  {REPLAY_STATIONS[code][2]}: {sum(v is not None for v in data.values())}칸")
+    if quick:
+        start, end = quick_window(series, start, end)
+        print(f"  차오르는 부분만: {start:%H:%M} ~ {end:%H:%M}")
     steps = int((end - start) / STEP) + 1
     print(f"재생: {steps}칸, {speed:g}배속 → 약 {steps * 10 / speed:.0f}분\n")
 
@@ -236,6 +274,7 @@ def main(argv=None) -> None:
     r = sub.add_parser("run", help="재생")
     r.add_argument("event", choices=list(EVENTS))
     r.add_argument("--speed", type=float, default=1.0, help="배속 (10 = 10분 자료 1칸을 1분마다)")
+    r.add_argument("--quick", action="store_true", help="차오르는 부분만 잘라서 (시연 녹화용)")
     s = sub.add_parser("stop", help="시연 자료 지우기")
     s.add_argument("--hide", action="store_true", help="앱 목록에서도 숨기기")
     a = p.parse_args(argv)
@@ -247,7 +286,7 @@ def main(argv=None) -> None:
     elif a.cmd == "run":
         if a.speed <= 0:
             sys.exit("--speed는 0보다 커야 해요")
-        run(a.event, a.speed)
+        run(a.event, a.speed, quick=a.quick)
     else:
         stop(a.hide)
 

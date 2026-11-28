@@ -164,6 +164,22 @@ def test_source_label():
     assert vv.source_text(["replay"]) == "자료: 한강홍수통제소 2026년 기록 재생(시연)"
 
 
+def test_quick_window():                                           # 시연 녹화용 자르기
+    from decimal import Decimal as D
+    t0 = R.parse_event("8/22")[0]
+    rain = {t0 + R.STEP * i: D("0") for i in range(-12, 37)}
+    water = {t0 + R.STEP * i: D("1.00") for i in range(-12, 37)}
+    for i in range(10, 16):                                        # 10~15칸: 10분 3mm → 6칸째 18mm (주의)
+        rain[t0 + R.STEP * i] = D("3")
+    for i, v in [(18, "1.15"), (19, "1.40"), (20, "1.60")]:        # 20칸에서 30분 상승 0.60 (대피)
+        water[t0 + R.STEP * i] = D(v)
+    for i in range(21, 37):
+        water[t0 + R.STEP * i] = D("1.60")
+    s, e = R.quick_window({"rain": rain, "water": water}, t0, t0 + R.STEP * 36)
+    assert s == t0 + R.STEP * 12 and e == t0 + R.STEP * 21     # 처음 주의(14칸, 15mm) 20분 전 ~ 대피 첫 칸(19칸, +0.40m) 20분 뒤
+    assert R.quick_window({"rain": {}, "water": {}}, t0, t0 + R.STEP) == (t0, t0 + R.STEP)
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
