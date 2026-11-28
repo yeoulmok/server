@@ -12,6 +12,7 @@
   python -m app.replay setup                       # 시연 계곡 만들기 (여러 번 해도 같음)
   python -m app.replay run 8/22 --speed 10         # 8/22 비를 10배속으로 (10분 자료 1칸 = 1분)
   python -m app.replay run 7/8                     # 실제 속도 (10분마다 1칸)
+  python -m app.replay run 8/22 --demo             # 앱 심사 영상용: 시작하자마자 주의 → 정확히 1분 뒤 위험, 끝
   python -m app.replay run 8/22 --quick --speed 30 # 차오르는 부분만 잘라서 (주의 20분 전 ~ 가장 높은 단계 20분 뒤), 2~3분
   python -m app.replay stop [--hide]               # 시연 자료 지우기 (--hide: 앱 목록에서도 숨김)
 """
@@ -83,6 +84,7 @@ def quick_window(series: dict[str, dict], start: datetime, end: datetime) -> tup
     while t <= end:
         times.append((t, level(t)))
         t += STEP
+    quick_window.first = {lv: next((t for t, x in times if x >= lv), None) for lv in (1, 2, 3)}
     hits = [(t, lv) for t, lv in times if lv > 0]
     if not hits:
         return start, end
@@ -90,6 +92,16 @@ def quick_window(series: dict[str, dict], start: datetime, end: datetime) -> tup
     first = hits[0][0]
     first_top = next(t for t, lv in hits if lv == top)
     return max(start, first - QUICK_PAD), min(end, first_top + QUICK_PAD)
+
+
+def demo_window(series: dict[str, dict], start: datetime, end: datetime, gap_sec: float = 60) -> tuple[datetime, datetime, float]:
+    """처음 주의 칸 ~ 처음 위험 칸, 그 사이가 gap_sec초가 되는 배속."""
+    quick_window(series, start, end)
+    c, d = quick_window.first[1], quick_window.first[2]
+    if c is None or d is None or d <= c:
+        raise SystemExit("이 날은 주의→위험이 없어서 --demo를 못 씀. --quick을 쓰세요")
+    steps = int((d - c) / STEP)
+    return c, d, steps * 600 / gap_sec
 
 
 def floor10(t: datetime) -> datetime:
@@ -219,7 +231,8 @@ def write_step(conn, series: dict[str, dict], pointer: datetime, anchor: datetim
 # 명령
 # ---------------------------------------------------------------------------
 
-def run(event: str, speed: float, sleep=time.sleep, clock=lambda: datetime.now(KST), quick: bool = False) -> None:
+def run(event: str, speed: float, sleep=time.sleep, clock=lambda: datetime.now(KST), quick: bool = False,
+        demo: bool = False) -> None:
     from app import judge
 
     start, end = parse_event(event)
@@ -227,7 +240,10 @@ def run(event: str, speed: float, sleep=time.sleep, clock=lambda: datetime.now(K
     series = {code: fetch(src, kind, start - PAD, end) for code, (src, kind, _, _) in REPLAY_STATIONS.items()}
     for code, data in series.items():
         print(f"  {REPLAY_STATIONS[code][2]}: {sum(v is not None for v in data.values())}칸")
-    if quick:
+    if demo:
+        start, end, speed = demo_window(series, start, end)
+        print(f"  시연: 원래 {start:%H:%M} 주의 → {end:%H:%M} 위험, {speed:g}배속 → 시작하자마자 주의, 1분 뒤 위험")
+    elif quick:
         start, end = quick_window(series, start, end)
         print(f"  차오르는 부분만: {start:%H:%M} ~ {end:%H:%M}")
     steps = int((end - start) / STEP) + 1
@@ -275,6 +291,7 @@ def main(argv=None) -> None:
     r.add_argument("event", choices=list(EVENTS))
     r.add_argument("--speed", type=float, default=1.0, help="배속 (10 = 10분 자료 1칸을 1분마다)")
     r.add_argument("--quick", action="store_true", help="차오르는 부분만 잘라서 (시연 녹화용)")
+    r.add_argument("--demo", action="store_true", help="주의로 시작 → 1분 뒤 위험, 끝 (앱 심사 영상용)")
     s = sub.add_parser("stop", help="시연 자료 지우기")
     s.add_argument("--hide", action="store_true", help="앱 목록에서도 숨기기")
     a = p.parse_args(argv)
@@ -286,7 +303,7 @@ def main(argv=None) -> None:
     elif a.cmd == "run":
         if a.speed <= 0:
             sys.exit("--speed는 0보다 커야 해요")
-        run(a.event, a.speed, quick=a.quick)
+        run(a.event, a.speed, quick=a.quick, demo=a.demo)
     else:
         stop(a.hide)
 

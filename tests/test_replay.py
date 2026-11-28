@@ -178,6 +178,8 @@ def test_quick_window():                                           # 시연 녹�
     s, e = R.quick_window({"rain": rain, "water": water}, t0, t0 + R.STEP * 36)
     assert s == t0 + R.STEP * 12 and e == t0 + R.STEP * 21     # 처음 주의(14칸, 15mm) 20분 전 ~ 대피 첫 칸(19칸, +0.40m) 20분 뒤
     assert R.quick_window({"rain": {}, "water": {}}, t0, t0 + R.STEP) == (t0, t0 + R.STEP)
+    c, d, speed = R.demo_window({"rain": rain, "water": water}, t0, t0 + R.STEP * 36)
+    assert c == t0 + R.STEP * 14 and d == t0 + R.STEP * 19 and speed == 50   # 5칸(50분)을 60초에
 
 
 if __name__ == "__main__":
